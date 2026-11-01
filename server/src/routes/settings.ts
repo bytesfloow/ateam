@@ -10,7 +10,6 @@ const settingsSchema = z.object({
       baseUrl: z.string().optional(),
       model: z.string().optional(),
       temperature: z.number().optional(),
-      maxIterations: z.number().optional(),
       deepThinking: z.boolean().optional(),
       thinkingLevel: z.string().optional(),
       maxContextTokens: z.number().optional(),

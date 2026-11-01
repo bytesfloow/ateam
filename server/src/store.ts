@@ -126,13 +126,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-/** 归一化最大迭代轮数：0 = 不限制，缺省/非法值回退到 fallback，有效范围 0-100。 */
-function normalizeMaxIterations(value: unknown, fallback: number): number {
-  const parsed = value === undefined || value === null || value === '' ? fallback : Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return clamp(Math.round(parsed), 0, 100);
-}
-
 /** 归一化模型请求超时：0 = 不限制；正数夹在 [10s, 60min]。 */
 function normalizeLlmTimeout(value: unknown): number {
   const parsed = Number(value ?? 0);
@@ -278,7 +271,6 @@ export class Store {
       'llm.apiKey': DEFAULT_LLM.apiKey,
       'llm.model': DEFAULT_LLM.model,
       'llm.temperature': DEFAULT_LLM.temperature,
-      'llm.maxIterations': DEFAULT_LLM.maxIterations,
       'llm.deepThinking': DEFAULT_LLM.deepThinking,
       'llm.thinkingLevel': DEFAULT_LLM.thinkingLevel,
       'llm.maxContextTokens': DEFAULT_LLM.maxContextTokens,
@@ -293,6 +285,8 @@ export class Store {
     }
     // Mock 模式已移除：清掉历史版本遗留的开关，避免残留无效配置。
     this.db.prepare("DELETE FROM settings WHERE key = 'llm.mock'").run();
+    // 轮次限制已移除：智能体运行不再设迭代上限，清掉历史设置键。
+    this.db.prepare("DELETE FROM settings WHERE key = 'llm.maxIterations'").run();
     this.migrateRuntimeTimeouts();
   }
 
@@ -331,7 +325,6 @@ export class Store {
     apiKey: string;
     model: string;
     temperature: number;
-    maxIterations: number;
     deepThinking: boolean;
     thinkingLevel: ThinkingLevel;
     maxContextTokens: number;
@@ -342,7 +335,6 @@ export class Store {
       apiKey: asString(this.rawSetting('llm.apiKey')),
       model: asString(this.rawSetting('llm.model') ?? DEFAULT_LLM.model),
       temperature: clamp(asNumber(this.rawSetting('llm.temperature') ?? DEFAULT_LLM.temperature), 0, 2),
-      maxIterations: clamp(asNumber(this.rawSetting('llm.maxIterations') ?? DEFAULT_LLM.maxIterations), 0, 100),
       deepThinking: Boolean(this.rawSetting('llm.deepThinking') ?? DEFAULT_LLM.deepThinking),
       thinkingLevel: normalizeThinkingLevel(
         this.rawSetting('llm.thinkingLevel') ?? DEFAULT_LLM.thinkingLevel,
@@ -397,7 +389,6 @@ export class Store {
         baseUrl: llm.baseUrl,
         model: llm.model,
         temperature: llm.temperature,
-        maxIterations: llm.maxIterations,
         deepThinking: llm.deepThinking,
         thinkingLevel: llm.thinkingLevel,
         maxContextTokens: llm.maxContextTokens,
@@ -435,10 +426,6 @@ export class Store {
       if (llm.temperature !== undefined) {
         assert(Number.isFinite(llm.temperature), 400, 'temperature 必须是数字');
         this.setRawSetting('llm.temperature', clamp(llm.temperature, 0, 2));
-      }
-      if (llm.maxIterations !== undefined) {
-        assert(Number.isFinite(llm.maxIterations), 400, '最大迭代轮数必须是数字');
-        this.setRawSetting('llm.maxIterations', Math.round(clamp(llm.maxIterations, 0, 100)));
       }
       if (llm.deepThinking !== undefined) this.setRawSetting('llm.deepThinking', Boolean(llm.deepThinking));
       if (llm.thinkingLevel !== undefined) {
@@ -626,7 +613,6 @@ export class Store {
       guide: asString(row.guide),
       model: row.model === null || row.model === undefined || row.model === '' ? null : asString(row.model),
       temperature: row.temperature === null || row.temperature === undefined ? null : asNumber(row.temperature),
-      maxIterations: Math.max(0, Math.round(asNumber(row.max_iterations) || 0)),
       tools: parseJson<AgentToolsConfig>(row.tools, { builtin: DEFAULT_BUILTINS, custom: [] }),
       skillIds: parseJson<string[]>(row.skill_ids, []),
       accent: asString(row.accent) || ACCENTS[0],
@@ -718,7 +704,6 @@ export class Store {
       input.temperature === null || input.temperature === undefined
         ? null
         : clamp(Number(input.temperature), 0, 2);
-    const maxIterations = normalizeMaxIterations(input.maxIterations, 0);
     const accent =
       typeof input.accent === 'string' && /^#[0-9a-fA-F]{6}$/.test(input.accent)
         ? input.accent
@@ -732,8 +717,8 @@ export class Store {
       this.db
         .prepare(
           `INSERT INTO agents
-           (id, name, slug, description, responsibilities, deliverable, guide, model, temperature, max_iterations, tools, skill_ids, accent, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, name, slug, description, responsibilities, deliverable, guide, model, temperature, tools, skill_ids, accent, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -745,7 +730,6 @@ export class Store {
           guide,
           model,
           temperature,
-          maxIterations,
           JSON.stringify(tools),
           JSON.stringify(skillIds),
           accent,
@@ -788,10 +772,6 @@ export class Store {
         : input.temperature === null
           ? null
           : clamp(Number(input.temperature), 0, 2);
-    const maxIterations =
-      input.maxIterations === undefined
-        ? current.maxIterations
-        : normalizeMaxIterations(input.maxIterations, current.maxIterations);
     const accent =
       input.accent !== undefined && /^#[0-9a-fA-F]{6}$/.test(input.accent) ? input.accent : current.accent;
     const tools = input.tools !== undefined ? this.normalizeTools({ ...current.tools, ...input.tools }) : current.tools;
@@ -801,7 +781,7 @@ export class Store {
       this.db
         .prepare(
           `UPDATE agents SET name = ?, description = ?, responsibilities = ?, deliverable = ?, guide = ?, model = ?, temperature = ?,
-             max_iterations = ?, tools = ?, skill_ids = ?, accent = ?, updated_at = ?
+             tools = ?, skill_ids = ?, accent = ?, updated_at = ?
            WHERE id = ?`,
         )
         .run(
@@ -812,7 +792,6 @@ export class Store {
           guide,
           model,
           temperature,
-          maxIterations,
           JSON.stringify(tools),
           JSON.stringify(skillIds),
           accent,

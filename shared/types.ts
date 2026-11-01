@@ -196,7 +196,6 @@ export interface LlmSettingsView {
   baseUrl: string;
   model: string;
   temperature: number;
-  maxIterations: number;
   /** 是否开启深度思考（请求中附带推理参数）。 */
   deepThinking: boolean;
   /** 深度思考级别，deepThinking 开启时生效。 */
@@ -239,7 +238,6 @@ export interface SettingsUpdate {
     baseUrl?: string;
     model?: string;
     temperature?: number;
-    maxIterations?: number;
     deepThinking?: boolean;
     thinkingLevel?: ThinkingLevel;
     maxContextTokens?: number;
@@ -278,8 +276,6 @@ export interface Agent {
   guide: string;
   model: string | null;
   temperature: number | null;
-  /** 单次运行的 ReAct 轮数上限，0 = 不限制。 */
-  maxIterations: number;
   tools: AgentToolsConfig;
   skillIds: string[];
   accent: string;
@@ -304,8 +300,6 @@ export interface AgentInput {
   guide?: string;
   model?: string | null;
   temperature?: number | null;
-  /** 0 = 不限制；缺省时不限制。 */
-  maxIterations?: number;
   tools?: Partial<AgentToolsConfig>;
   skillIds?: string[];
   accent?: string;

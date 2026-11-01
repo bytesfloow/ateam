@@ -53,8 +53,6 @@ interface Draft {
   guide: string;
   model: string;
   temperature: string;
-  /** 空字符串 = 不限制 */
-  maxIterations: string;
   toolsBuiltin: string[];
   toolsCustom: string[];
   skillIds: string[];
@@ -70,7 +68,6 @@ function newDraft(index: number): Draft {
     guide: '',
     model: '',
     temperature: '',
-    maxIterations: '',
     toolsBuiltin: [...DEFAULT_BUILTINS],
     toolsCustom: [],
     skillIds: [],
@@ -87,7 +84,6 @@ function agentToDraft(agent: Agent): Draft {
     guide: agent.guide,
     model: agent.model ?? '',
     temperature: agent.temperature === null ? '' : String(agent.temperature),
-    maxIterations: agent.maxIterations > 0 ? String(agent.maxIterations) : '',
     toolsBuiltin: agent.tools.builtin,
     toolsCustom: agent.tools.custom,
     skillIds: agent.skillIds,
@@ -143,14 +139,6 @@ export function AgentsPage() {
       const temperature =
         draft.temperature.trim() === '' ? null : Math.min(2, Math.max(0, Number(draft.temperature)));
       if (temperature !== null && !Number.isFinite(temperature)) throw new Error('温度必须是 0-2 之间的数字');
-      const maxIterationsText = draft.maxIterations.trim();
-      let maxIterations = 0;
-      if (maxIterationsText !== '') {
-        maxIterations = Math.round(Number(maxIterationsText));
-        if (!Number.isFinite(maxIterations) || maxIterations < 0 || maxIterations > 100) {
-          throw new Error('最大迭代轮数需为 0-100 的整数，留空为不限制');
-        }
-      }
       const payload: AgentInput = {
         name: draft.name.trim(),
         description: draft.description.trim(),
@@ -159,7 +147,6 @@ export function AgentsPage() {
         guide: draft.guide,
         model: draft.model.trim() || null,
         temperature,
-        maxIterations,
         tools: {
           builtin: draft.toolsBuiltin,
           custom: draft.toolsCustom,
@@ -419,17 +406,6 @@ export function AgentsPage() {
                   value={draft.temperature}
                   placeholder="继承"
                   onChange={(event) => setDraft({ ...draft, temperature: event.target.value })}
-                />
-              </Field>
-              <Field label="最大迭代轮数" hint="单次运行的 ReAct 上限，留空为不限制。">
-                <input
-                  className="input"
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={draft.maxIterations}
-                  placeholder="不限制"
-                  onChange={(event) => setDraft({ ...draft, maxIterations: event.target.value })}
                 />
               </Field>
             </div>

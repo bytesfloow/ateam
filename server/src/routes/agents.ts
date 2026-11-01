@@ -24,7 +24,6 @@ const createAgentSchema = z.object({
   responsibilities: z.string().trim().min(1, '请填写任务说明').max(PROMPT_FIELD_MAX),
   model: z.string().max(100).nullable().optional(),
   temperature: z.number().min(0).max(2).nullable().optional(),
-  maxIterations: z.number().int().min(0).max(100).optional(),
   tools: toolsSchema.optional(),
   skillIds: z.array(z.string()).max(50).optional(),
   accent: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),

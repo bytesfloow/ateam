@@ -42,8 +42,6 @@ export const DEFAULT_LLM = {
   baseUrl: process.env.LLM_BASE_URL || 'https://api.deepseek.com/v1',
   model: process.env.LLM_MODEL || 'deepseek-chat',
   temperature: 0.7,
-  /** 0 = 不限制 */
-  maxIterations: 0,
   /** 是否开启深度思考（请求中附带推理参数）。 */
   deepThinking: false,
   /** 深度思考级别，deepThinking 开启时生效。 */

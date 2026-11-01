@@ -879,9 +879,6 @@ export class Runtime {
       }
     }
     const thresholdTokens = llmConfig.maxContextTokens * CONTEXT_COMPRESS_RATIO;
-    // 智能体与全局设置均可设为不限制（0）；生效上限取两者中有限的较小值，均为 0 时表示不限制。
-    const iterationCaps = [agent.maxIterations, llmConfig.maxIterations].filter((value) => value > 0);
-    const maxIterations = iterationCaps.length > 0 ? Math.min(...iterationCaps) : 0;
     const model = agent.model || llmConfig.model;
     const temperature = agent.temperature ?? llmConfig.temperature;
     const context: ToolContext = {
@@ -906,7 +903,8 @@ export class Runtime {
       observations: new Map(),
     };
 
-    for (let iteration = 1; maxIterations <= 0 || iteration <= maxIterations; iteration += 1) {
+    // 轮次不设上限：回合只能通过完成、终止或失败退出。
+    for (let iteration = 1; ; iteration += 1) {
       if (signal.aborted) {
         return { status: 'aborted', finalText: '', handoff: null, error: '任务已终止', iterations: iteration - 1 };
       }
@@ -1150,14 +1148,6 @@ export class Runtime {
         }
       }
     }
-
-    return {
-      status: 'failed',
-      finalText: '',
-      handoff: null,
-      error: maxIterations > 0 ? `达到最大迭代轮数（${maxIterations}），回合未完成` : '回合未完成',
-      iterations: maxIterations,
-    };
   }
 
   private waitForIdle(agentId: string, signal: AbortSignal): Promise<void> {

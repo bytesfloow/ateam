@@ -27,7 +27,7 @@ describe('database schema', () => {
   it('creates the pipeline schema on a fresh database', () => {
     const db = openDatabase(':memory:');
     try {
-      expect(userVersion(db)).toBe(10);
+      expect(userVersion(db)).toBe(11);
       expect(tableNamesOf(db)).toEqual(
         expect.arrayContaining([
           'settings',
@@ -65,6 +65,7 @@ describe('database schema', () => {
       expect(columnsOf(db, 'agents')).not.toContain('handoff_policy');
       expect(columnsOf(db, 'agents')).not.toContain('handoff_agents');
       expect(columnsOf(db, 'agents')).not.toContain('handoff_human');
+      expect(columnsOf(db, 'agents')).not.toContain('max_iterations');
     } finally {
       db.close();
     }
@@ -147,7 +148,7 @@ describe('database schema', () => {
 
     const db = openDatabase(file);
     try {
-      expect(userVersion(db)).toBe(10);
+      expect(userVersion(db)).toBe(11);
       expect(tableNamesOf(db)).toContain('pipelines');
 
       // 业务数据（智能体、流水线、任务、回合等）全部清空，schema 重建。
@@ -308,6 +309,30 @@ describe('schema migrations', () => {
       expect(db.prepare("SELECT value FROM settings WHERE key = 'llm.model'").get()).toMatchObject({
         value: '"deepseek-chat"',
       });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('v10 → v11：移除智能体 max_iterations 列（轮次上限已废弃）', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE agents (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          max_iterations INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO agents (id, name, max_iterations) VALUES ('a1', '老智能体', 10);
+        PRAGMA user_version = 10;
+      `);
+
+      // 使用应用真实的迁移清单（默认参数）。
+      applyMigrations(db, 10, 11);
+      expect(userVersion(db)).toBe(11);
+      expect(columnsOf(db, 'agents')).not.toContain('max_iterations');
+      expect(db.prepare('SELECT COUNT(*) AS c FROM agents').get()).toMatchObject({ c: 1 });
     } finally {
       db.close();
     }

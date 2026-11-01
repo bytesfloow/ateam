@@ -103,7 +103,6 @@ const DESIGNER_DEFAULT_DEFINITION: AgentInput = {
     '变更生效后建议用户试运行验证，用 list_tasks / get_task 查看运行记录、用 list_feedback 收集智能体的反馈，持续迭代优化。',
   model: null,
   temperature: 0.3,
-  maxIterations: 0,
   tools: {
     builtin: [
       'bash',
@@ -403,7 +402,7 @@ export function assembleDesignerSystemPrompt(store: Store, agent: Agent, workspa
     '- 每个智能体在一个任务内拥有独立工作区：inbox\\ 下是它的全部输入（user\\ 子目录是用户投放的文件，上游交付按发送方分子目录），产出建议放 output\\；交接对象看不到它未交接的目录。',
     '- 交付方式只有一种：调用 handoff 交接一个文件夹（整目录复制给下游，同名自动加 -v2 后缀、绝不覆盖）；要向下游说明的内容写成交接目录里的 README.md；终点环节的交付文件夹进入任务 final\\ 目录，由用户验收。',
     '- 工具：内置工具（文件、Shell、联网、handoff、submit_feedback 等）由系统统一授予所有任务型智能体，不需要也不能按环节裁剪；load_skill 只在为智能体配置了技能时出现。handoff 是环节间交接专用工具，只有任务环节才有。你只需按需为智能体挑选自定义工具与技能，让它们充分发挥能力。',
-    '- 模型参数（model、temperature、maxIterations）可按智能体覆盖，不填用全局默认。',
+    '- 模型参数（model、temperature）可按智能体覆盖，不填用全局默认。',
     '- 运行时系统会自动注入：流水线定位与上下游、本环节出边的交接条件、任务工作区路径、工具与技能清单。职责、交付要求与指南里不要重复这些内容，写了也是冗余。',
     '',
     '# 流水线的运作方式',
@@ -425,7 +424,6 @@ export function assembleDesignerSystemPrompt(store: Store, agent: Agent, workspa
     '- 触发提示词是下游收到的唯一指令，要写成完整的任务书：背景、要做什么、从 {deliverables} 读什么、产出什么；并提醒下游先查看自己的 inbox\\。',
     '- 交接条件写「什么情况下交给谁」：可判定、分支之间互斥、合并起来覆盖全部情况。',
     '- 交付要求写清形式与验收标准（文件格式、命名、放哪个目录），终点环节要面向「用户验收」来写；默认约定产出放 output\\ 并附 README.md。',
-    '- 长任务建议设置 maxIterations 上限，防止单环节失控。',
     '',
     '# 工作规则',
     '1. 与用户的协作全程以对话完成，用户不需要点击任何确认按钮。节奏是：需求有疑问就先提问澄清（一次把关键问题问完：分工、顺序、交付物、边界），需求清晰后先简明讲出设计思路（角色分工、流转顺序、交付物、对现有系统的影响，只讲重点，用户想深入细节会自己追问），用户认可思路后立即调用 apply_changes 执行。',
@@ -611,7 +609,6 @@ const AGENT_FIELDS_PROPERTIES: Record<string, unknown> = {
   guide: { type: 'string', description: '工作指南：工作方法与思考方式' },
   model: { type: ['string', 'null'], description: '覆盖模型名；留空用全局默认' },
   temperature: { type: ['number', 'null'], description: '覆盖温度（0-2）' },
-  maxIterations: { type: 'number', description: '单次运行 ReAct 轮数上限，0 = 不限制' },
   tools: {
     type: 'object',
     description: '工具配置（内置工具由系统统一授予所有智能体，builtin 字段已不生效，仅为兼容保留）',
@@ -815,7 +812,7 @@ function makeDesignerTools(deps: DesignerToolDeps, metas?: DesignerToolMeta[]): 
         `- 任务说明：${agent.responsibilities || '（无）'}`,
         `- 交付要求：${agent.deliverable || '（无，运行时输出默认说明）'}`,
         `- 工作指南：${agent.guide || '（无）'}`,
-        `- 模型：${agent.model ?? '（用全局默认）'}；温度：${agent.temperature ?? '（用全局默认）'}；最大轮数：${agent.maxIterations || '不限制'}`,
+        `- 模型：${agent.model ?? '（用全局默认）'}；温度：${agent.temperature ?? '（用全局默认）'}`,
         `- 内置工具：${builtin}`,
         `- 自定义工具：${customNames}`,
         `- 技能：${skillNames}`,
@@ -1975,8 +1972,6 @@ export class DesignerRuntime {
     const spliceDropped = (count: number): void => {
       for (const message of history.splice(0, count)) effectiveCost -= messageCost(message);
     };
-    const iterationCaps = [agent.maxIterations, llmConfig.maxIterations].filter((value) => value > 0);
-    const maxIterations = iterationCaps.length > 0 ? Math.min(...iterationCaps) : 0;
     const model = agent.model || llmConfig.model;
     const temperature = agent.temperature ?? llmConfig.temperature;
 
@@ -2011,7 +2006,8 @@ export class DesignerRuntime {
       iteration: 1,
     };
 
-    for (let iteration = 1; maxIterations <= 0 || iteration <= maxIterations; iteration += 1) {
+    // 轮次不设上限：会话只能通过回复完成、终止或错误退出。
+    for (let iteration = 1; ; iteration += 1) {
       if (signal.aborted) {
         this.appendStoppedNote(sessionId);
         return;
@@ -2168,10 +2164,5 @@ export class DesignerRuntime {
         });
       }
     }
-
-    this.appendErrorNote(
-      sessionId,
-      maxIterations > 0 ? `达到最大迭代轮数（${maxIterations}），本次回复未完成` : '本次回复未完成',
-    );
   }
 }

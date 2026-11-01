@@ -31,7 +31,6 @@ interface FormState {
   baseUrl: string;
   model: string;
   temperature: string;
-  maxIterations: string;
   deepThinking: boolean;
   thinkingLevel: ThinkingLevel;
   maxContextTokens: string;
@@ -72,7 +71,6 @@ function formFromSettings(settings: AppSettings): FormState {
     baseUrl: settings.llm.baseUrl,
     model: settings.llm.model,
     temperature: String(settings.llm.temperature),
-    maxIterations: settings.llm.maxIterations > 0 ? String(settings.llm.maxIterations) : '',
     deepThinking: settings.llm.deepThinking,
     thinkingLevel: settings.llm.thinkingLevel,
     maxContextTokens: String(settings.llm.maxContextTokens),
@@ -124,9 +122,6 @@ export function SettingsPage() {
       };
       if (!form.baseUrl.trim()) throw new Error('请填写 Base URL');
       if (!form.model.trim()) throw new Error('请填写模型名称');
-      const maxIterationsText = form.maxIterations.trim();
-      const maxIterations =
-        maxIterationsText === '' ? 0 : numberField(maxIterationsText, '最大迭代轮数', 0, 100);
       const thinkingLevel = form.thinkingLevel.trim();
       if (!/^[A-Za-z0-9_-]{1,32}$/.test(thinkingLevel)) {
         throw new Error('思考级别只能包含字母、数字、下划线或连字符（1-32 个字符），例如 low / medium / high');
@@ -140,7 +135,6 @@ export function SettingsPage() {
         baseUrl: form.baseUrl.trim(),
         model: form.model.trim(),
         temperature: numberField(form.temperature, '温度', 0, 2),
-        maxIterations,
         deepThinking: form.deepThinking,
         thinkingLevel,
         maxContextTokens: numberField(form.maxContextTokens, '最大上下文长度', 1000, 10000000),
@@ -333,17 +327,6 @@ export function SettingsPage() {
               step={0.1}
               value={form.temperature}
               onChange={(event) => update({ temperature: event.target.value })}
-            />
-          </Field>
-          <Field label="最大迭代轮数" hint="单次运行的全局上限，0 或留空为不限制。">
-            <input
-              className="input"
-              type="number"
-              min={0}
-              max={100}
-              placeholder="不限制"
-              value={form.maxIterations}
-              onChange={(event) => update({ maxIterations: event.target.value })}
             />
           </Field>
           <div className="field field--inline-action">

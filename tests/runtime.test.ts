@@ -113,7 +113,6 @@ function createAgents(store: Store, names: string[]): Agent[] {
     store.createAgent({
       name,
       guide: `你是测试智能体 ${name}。`,
-      maxIterations: 10,
     }),
   );
 }
@@ -1201,11 +1200,5 @@ describe('task runtime', () => {
     expect(agent.deliverable).toBe('初版交付内容');
     const updated = h.store.updateAgent(agent.id, { deliverable: '改版交付内容' });
     expect(updated.deliverable).toBe('改版交付内容');
-  });
-
-  it('defaults maxIterations to unlimited (0) for new agents', () => {
-    const h = createHarness(() => final('不会执行'));
-    const agent = h.store.createAgent({ name: '默认轮数' });
-    expect(agent.maxIterations).toBe(0);
   });
 });

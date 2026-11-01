@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 /**
  * 首个支持增量迁移的版本。低于该版本的旧库（探索期的历史 schema）仍走「清空重建」：
@@ -33,6 +33,14 @@ const MIGRATIONS: SchemaMigration[] = [
       db.exec('DELETE FROM designer_sessions;');
     },
   },
+  {
+    // v11：移除智能体轮次上限——产品决策为「不允许给任何智能体设最大轮次限制」，
+    // 运行时不再读写 max_iterations，旧列直接删除。
+    to: 11,
+    up: (db) => {
+      db.exec('ALTER TABLE agents DROP COLUMN max_iterations;');
+    },
+  },
 ];
 
 export interface SchemaMigration {
@@ -59,7 +67,6 @@ CREATE TABLE IF NOT EXISTS agents (
   guide TEXT NOT NULL DEFAULT '',
   model TEXT,
   temperature REAL,
-  max_iterations INTEGER NOT NULL DEFAULT 0,
   tools TEXT NOT NULL,
   skill_ids TEXT NOT NULL DEFAULT '[]',
   accent TEXT NOT NULL DEFAULT '#6d8cff',
