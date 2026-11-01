@@ -5,6 +5,7 @@ import {
   DraftingCompass,
   ListTodo,
   MessageSquareWarning,
+  MoreHorizontal,
   Settings,
   Sparkles,
   Trash2,
@@ -32,6 +33,11 @@ const NAV_ITEMS = [
   { to: '/settings', label: '设置', icon: Settings, match: (path: string) => path.startsWith('/settings') },
 ];
 
+/* 手机端底部导航：高频页面直达，低频收进「更多」抽屉 */
+const MOBILE_PRIMARY_ITEMS = [NAV_ITEMS[1], NAV_ITEMS[0], NAV_ITEMS[2], NAV_ITEMS[3]];
+const MOBILE_MORE_ITEMS = NAV_ITEMS.slice(4);
+const isMorePath = (path: string) => MOBILE_MORE_ITEMS.some((item) => item.match(path));
+
 function pageMeta(pathname: string): { title: string; subtitle: string } {
   if (pathname === '/') return { title: '任务', subtitle: '选一条流水线发起任务，看它按环节自动推进' };
   if (pathname.startsWith('/tasks/')) return { title: '任务详情', subtitle: '流水线进度、每环产出与对话过程' };
@@ -58,6 +64,7 @@ export function Layout() {
   const connected = useRealtime();
   const [resetOpen, setResetOpen] = useState(false);
   const [resetText, setResetText] = useState('');
+  const [moreOpen, setMoreOpen] = useState(false);
   const workspaceRef = useRef<HTMLDivElement>(null);
 
   const { data } = useQuery({
@@ -74,8 +81,9 @@ export function Layout() {
     document.title = `${meta.title} · A-Team`;
   }, [meta.title]);
 
-  // 切换页面时回到内容顶部
+  // 切换页面时回到内容顶部，并收起「更多」抽屉
   useEffect(() => {
+    setMoreOpen(false);
     const el = workspaceRef.current;
     if (el) {
       el.scrollTop = 0;
@@ -175,6 +183,64 @@ export function Layout() {
           <Outlet />
         </main>
       </div>
+
+      <nav className="bottom-nav" aria-label="主导航">
+        {MOBILE_PRIMARY_ITEMS.map((item) => {
+          const active = item.match(location.pathname);
+          return (
+            <Link
+              key={item.to}
+              to={item.to}
+              className={cn('bottom-nav-item', active && 'bottom-nav-item--active')}
+              aria-current={active ? 'page' : undefined}
+            >
+              <item.icon size={20} strokeWidth={1.9} />
+              <span>{item.label}</span>
+            </Link>
+          );
+        })}
+        <button
+          type="button"
+          className={cn('bottom-nav-item', isMorePath(location.pathname) && 'bottom-nav-item--active')}
+          onClick={() => setMoreOpen(true)}
+        >
+          <MoreHorizontal size={20} strokeWidth={1.9} />
+          <span>更多</span>
+          {openFeedback > 0 ? <span className="nav-badge">{openFeedback}</span> : null}
+        </button>
+      </nav>
+
+      {moreOpen ? (
+        <div className="sheet-overlay" role="presentation" onClick={() => setMoreOpen(false)}>
+          <div className="sheet" role="dialog" aria-modal="true" aria-label="更多页面" onClick={(event) => event.stopPropagation()}>
+            <span className="sheet-handle" aria-hidden="true" />
+            <div className="sheet-title">更多</div>
+            <div className="sheet-nav">
+              {MOBILE_MORE_ITEMS.map((item) => {
+                const active = item.match(location.pathname);
+                const isFeedback = item.to === '/feedback';
+                return (
+                  <Link
+                    key={item.to}
+                    to={item.to}
+                    className={cn('sheet-nav-item', active && 'sheet-nav-item--active')}
+                  >
+                    <item.icon size={17} strokeWidth={1.9} />
+                    <span>{item.label}</span>
+                    {isFeedback && openFeedback > 0 ? <span className="nav-badge">{openFeedback}</span> : null}
+                  </Link>
+                );
+              })}
+            </div>
+            <div className="sheet-foot">
+              <span className={cn('connection-dot', connected ? 'is-online' : 'is-offline')} />
+              <span>{connected ? '实时连接' : '连接中…'}</span>
+              <Badge tone="success">Live</Badge>
+              <span>v{status?.version ?? '1.0.0'}</span>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <Modal
         open={resetOpen}
