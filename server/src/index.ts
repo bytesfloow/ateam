@@ -47,7 +47,7 @@ if (fs.existsSync(indexHtml)) {
       .send(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>A-Team</title></head>
 <body style="font-family:system-ui;background:#0b0e14;color:#e6e9f0;padding:48px;line-height:1.8">
 <h1>A-Team API 已启动</h1>
-<p>前端尚未构建。开发时请运行 <code>pnpm dev</code> 并访问 Vite 地址（默认 5173）；生产模式请先运行 <code>pnpm build</code> 再执行 <code>pnpm start</code>。</p>
+<p>前端尚未构建。开发时请运行 <code>pnpm dev</code> 并访问 Vite 地址（默认 5310）；生产模式请先运行 <code>pnpm build</code> 再执行 <code>pnpm start</code>。</p>
 <p>API 根路径：<code>/api</code></p>
 </body></html>`);
   });

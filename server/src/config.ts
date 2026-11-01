@@ -34,7 +34,7 @@ export const DB_PATH = process.env.ATEAM_DB_PATH
 
 export const WEB_DIST = path.join(PROJECT_ROOT, 'web', 'dist');
 
-export const PORT = Number(process.env.PORT || 3001);
+export const PORT = Number(process.env.PORT || 3310);
 export const HOST = process.env.HOST || '127.0.0.1';
 export const VERSION = APP_VERSION;
 
