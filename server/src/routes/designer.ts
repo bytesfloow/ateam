@@ -181,7 +181,7 @@ export function createDesignerRouter(deps: ApiDeps): Router {
     }),
   );
 
-  /** 清空对话记录：删除当前会话（消息、全部提案、上传附件）；工作目录文件与已生效变更保留。 */
+  /** 清空对话记录：删除当前会话（消息、全部变更记录、上传附件）；工作目录文件与已生效变更保留。 */
   router.post(
     '/clear',
     asyncHandler((_req, res) => {
@@ -239,22 +239,6 @@ export function createDesignerRouter(deps: ApiDeps): Router {
 
       const file: DesignerWorkspaceFilePreview = previewPayload(absolute, base);
       res.json({ file });
-    }),
-  );
-
-  router.post(
-    '/proposals/:id/approve',
-    asyncHandler((req, res) => {
-      const proposal = designer.approveProposal(param(req, 'id'));
-      res.json({ proposal });
-    }),
-  );
-
-  router.post(
-    '/proposals/:id/reject',
-    asyncHandler((req, res) => {
-      const proposal = designer.rejectProposal(param(req, 'id'));
-      res.json({ proposal });
     }),
   );
 

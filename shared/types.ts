@@ -721,8 +721,6 @@ export interface DesignerSession {
 export interface DesignerSessionSummary extends DesignerSession {
   messageCount: number;
   lastMessagePreview: string;
-  /** 会话是否挂有待确认的提案。 */
-  pendingProposals: number;
 }
 
 export interface DesignerMessage {
@@ -740,8 +738,8 @@ export interface DesignerMessage {
 }
 
 /**
- * 提案里的一条变更操作。引用已有对象时优先用 id，也接受 name（按名称唯一解析）；
- * 同一提案内 create 之后再引用，用 name（校验与应用都按变更顺序解析：
+ * 设计师的一条变更操作。引用已有对象时优先用 id，也接受 name（按名称唯一解析）；
+ * 同一次变更内 create 之后再引用，用 name（校验与应用都按变更顺序解析：
  * 仅可引用系统已有对象或前序变更创建的对象；先建后删、先删后引、后向引用都会被校验拒绝）。
  */
 export type DesignerChangeOp =
@@ -758,13 +756,18 @@ export type DesignerChangeOp =
   | { op: 'update_skill'; skillId?: string; skillName?: string; skill: Partial<SkillInput> }
   | { op: 'delete_skill'; skillId?: string; skillName?: string };
 
+/**
+ * 变更记录状态：设计师调用 apply_changes 直接执行后落档。
+ * - applied：全部变更生效；failed：执行中断，error 里说明失败项与已生效清单。
+ * - pending / rejected 是旧版「提案 + 界面确认」流程的遗留状态，仅为兼容历史数据保留。
+ */
 export type DesignerProposalStatus = 'pending' | 'applied' | 'rejected' | 'failed';
 
-/** 一次变更提案：设计师提出、用户确认后由系统原样执行。 */
+/** 一次对话式变更的留档：设计师经用户认可后直接执行，结果在此记录展示。 */
 export interface DesignerProposal {
   id: string;
   sessionId: string;
-  /** 触发本提案的助手消息（提案卡片渲染在该消息下方）。 */
+  /** 触发本次变更的助手消息（变更卡片渲染在该消息下方）。 */
   messageId: string | null;
   title: string;
   /** 一句话说明这次变更要达成什么。 */

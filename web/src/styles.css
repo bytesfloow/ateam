@@ -6653,11 +6653,6 @@ button.builtin-row:focus-visible {
   font-size: 12px;
 }
 
-.proposal-actions {
-  display: flex;
-  gap: 8px;
-}
-
 .designer-input {
   border-top: 1px solid var(--border-soft);
   background: var(--panel-2);

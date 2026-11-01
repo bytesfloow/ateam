@@ -2095,8 +2095,7 @@ export class Store {
     const rows = this.db
       .prepare(
         `SELECT s.*,
-           (SELECT COUNT(*) FROM designer_messages m WHERE m.session_id = s.id) AS message_count,
-           (SELECT COUNT(*) FROM designer_proposals p WHERE p.session_id = s.id AND p.status = 'pending') AS pending_proposals
+           (SELECT COUNT(*) FROM designer_messages m WHERE m.session_id = s.id) AS message_count
          FROM designer_sessions s
          ORDER BY s.updated_at DESC`,
       )
@@ -2120,7 +2119,6 @@ export class Store {
       return {
         ...this.mapDesignerSession(row),
         messageCount: asNumber(row.message_count),
-        pendingProposals: asNumber(row.pending_proposals),
         lastMessagePreview: preview ? truncateDesignerPreview(preview) : '（空对话）',
       };
     });
@@ -2255,21 +2253,38 @@ export class Store {
     };
   }
 
+  /**
+   * 落一条变更记录（对话式变更直接执行后的留档）：status 为 applied / failed，
+   * failed 时携带 error（说明第几项失败与已生效清单）。decided_at 即执行完成时间。
+   */
   createDesignerProposal(input: {
     sessionId: string;
     messageId: string | null;
     title: string;
     summary: string;
     changes: DesignerChangeOp[];
+    status: 'applied' | 'failed';
+    error?: string;
   }): DesignerProposal {
     const id = randomUUID();
     const timestamp = now();
     this.db
       .prepare(
-        `INSERT INTO designer_proposals (id, session_id, message_id, title, summary, changes, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
+        `INSERT INTO designer_proposals (id, session_id, message_id, title, summary, changes, status, error, created_at, decided_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, input.sessionId, input.messageId, input.title, input.summary, JSON.stringify(input.changes), timestamp);
+      .run(
+        id,
+        input.sessionId,
+        input.messageId,
+        input.title,
+        input.summary,
+        JSON.stringify(input.changes),
+        input.status,
+        input.error ?? null,
+        timestamp,
+        timestamp,
+      );
     this.touchDesignerSession(input.sessionId);
     return this.getDesignerProposal(id)!;
   }
@@ -2284,25 +2299,6 @@ export class Store {
       .prepare('SELECT * FROM designer_proposals WHERE session_id = ? ORDER BY created_at ASC')
       .all(sessionId) as Row[];
     return rows.map((row) => this.mapDesignerProposal(row));
-  }
-
-  updateDesignerProposal(
-    id: string,
-    patch: { status: DesignerProposalStatus; error?: string | null },
-  ): DesignerProposal {
-    const existing = this.getDesignerProposal(id);
-    assert(existing, 404, '提案不存在');
-    const decided = patch.status === 'pending' ? null : now();
-    this.db
-      .prepare('UPDATE designer_proposals SET status = ?, error = ?, decided_at = ? WHERE id = ?')
-      .run(patch.status, patch.error ?? null, decided, id);
-    this.touchDesignerSession(existing.sessionId);
-    return this.getDesignerProposal(id)!;
-  }
-
-  countPendingProposals(): number {
-    const row = this.db.prepare("SELECT COUNT(*) AS c FROM designer_proposals WHERE status = 'pending'").get() as Row;
-    return asNumber(row.c);
   }
 
   /** 设计师的会话与消息属于运行数据，随一键清空一起删除；设计师智能体本身保留。 */

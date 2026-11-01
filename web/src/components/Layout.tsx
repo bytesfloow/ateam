@@ -42,7 +42,7 @@ function pageMeta(pathname: string): { title: string; subtitle: string } {
   if (pathname === '/') return { title: '任务', subtitle: '选一条流水线发起任务，看它按环节自动推进' };
   if (pathname.startsWith('/tasks/')) return { title: '任务详情', subtitle: '流水线进度、每环产出与对话过程' };
   if (pathname.startsWith('/designer')) {
-    return { title: '流水线设计师', subtitle: '和系统管理员对话：讨论需求，提案确认后自动搭建智能体与流水线' };
+    return { title: '流水线设计师', subtitle: '和系统管理员对话：问清需求、讲明思路，认可后直接搭建智能体与流水线' };
   }
   if (pathname === '/pipelines/new' || /^\/pipelines\/[^/]+\/edit$/.test(pathname)) {
     return { title: '流水线编排', subtitle: '把智能体拖上画布，用带箭头的连线定义交接' };

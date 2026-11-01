@@ -7,7 +7,6 @@ import type {
   DeliverablePreview,
   DesignerAttachment,
   DesignerProfile,
-  DesignerProposal,
   DesignerSession,
   DesignerSessionDetail,
   DesignerSessionSummary,
@@ -249,12 +248,8 @@ export const api = {
   stopDesigner: () => request<{ stopped: boolean }>('/api/designer/stop', json('POST', {})),
   /** 手动压缩上下文（摘要式）：compressed=0 表示当前用量未超水位、无需压缩。 */
   compressDesigner: () => request<{ compressed: number }>('/api/designer/compress', json('POST', {})),
-  /** 清空对话记录：删除当前会话（消息、全部提案、上传附件），从全新会话开始。 */
+  /** 清空对话记录：删除当前会话（消息、全部变更记录、上传附件），从全新会话开始。 */
   clearDesignerConversation: () => request<{ cleared: boolean }>('/api/designer/clear', json('POST', {})),
-  approveDesignerProposal: (id: string) =>
-    request<{ proposal: DesignerProposal }>(`/api/designer/proposals/${encodeURIComponent(id)}/approve`, json('POST', {})),
-  rejectDesignerProposal: (id: string) =>
-    request<{ proposal: DesignerProposal }>(`/api/designer/proposals/${encodeURIComponent(id)}/reject`, json('POST', {})),
 
   reset: () =>
     request<{ result: { tasks: number; turns: number; messages: number } }>(

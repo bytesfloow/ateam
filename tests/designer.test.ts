@@ -137,13 +137,13 @@ describe('designer conversation loop', () => {
     expect(detail.messages[1].content).toContain('流水线');
     // 管理工具已注册进模型请求。
     const toolNames = provider.calls[0].tools.map((tool) => tool.function.name);
-    expect(toolNames).toContain('propose_changes');
+    expect(toolNames).toContain('apply_changes');
     expect(toolNames).toContain('get_agent');
     expect(toolNames).toContain('list_feedback');
-    // 系统提示词包含全局清单与提案规则。
+    // 系统提示词包含全局清单与对话式变更规则。
     expect(provider.calls[0].messages[0].role).toBe('system');
     const systemPrompt = String(provider.calls[0].messages[0].content);
-    expect(systemPrompt).toContain('propose_changes');
+    expect(systemPrompt).toContain('apply_changes');
     expect(systemPrompt).toContain('工作目录');
     // 消息里不回传图片，但落库消息保留该列（此处无图片）。
     expect(store.listDesignerMessages(session.id)).toHaveLength(2);
@@ -295,13 +295,13 @@ describe('designer conversation loop', () => {
   });
 });
 
-describe('designer proposals', () => {
-  it('creates a proposal via propose_changes and applies it on approval', async () => {
+describe('designer change execution（对话式变更：认可后直接生效）', () => {
+  it('applies changes immediately via apply_changes without any approval step', async () => {
     let call = 0;
     const { designer, store } = createHarness((request: LlmRequest) => {
       call += 1;
       if (call === 1) {
-        return toolCall('propose_changes', {
+        return toolCall('apply_changes', {
           title: '新建翻译官智能体',
           summary: '为将来的翻译流水线准备岗位。',
           changes: [
@@ -319,64 +319,36 @@ describe('designer proposals', () => {
         });
       }
       expect(request.messages.at(-1)?.role).toBe('tool');
-      return textReply('已提交提案，等待你在卡片上确认。');
+      return textReply('变更已生效，可以试运行了。');
     });
     const session = designer.createSession();
     designer.sendMessage(session.id, '帮我建一个翻译智能体');
-    const proposal = await waitFor(() => {
+    const record = await waitFor(() => {
       const detail = designer.getSessionDetail(session.id);
-      return detail.proposals.find((item) => item.status === 'pending') ?? null;
+      return detail.proposals.find((item) => item.status === 'applied') ?? null;
     });
-    expect(proposal.title).toBe('新建翻译官智能体');
-    expect(proposal.changes[0]).toMatchObject({ op: 'create_agent' });
-    // 提案挂在触发它的助手消息上。
+    expect(record.title).toBe('新建翻译官智能体');
+    expect(record.changes[0]).toMatchObject({ op: 'create_agent' });
+    // 变更记录挂在触发它的助手消息上。
     const detail = designer.getSessionDetail(session.id);
     const assistantIds = detail.messages.filter((message) => message.role === 'assistant').map((message) => message.id);
-    expect(assistantIds).toContain(proposal.messageId);
-    // 确认前：智能体还不存在。
-    expect(store.getAgentByName('翻译官')).toBeNull();
-
-    const applied = designer.approveProposal(proposal.id);
-    expect(applied.status).toBe('applied');
+    expect(assistantIds).toContain(record.messageId);
+    // 无需任何确认操作：工具调用结束即已生效。
     const created = store.getAgentByName('翻译官');
     expect(created).not.toBeNull();
     expect(created!.tools.builtin).toEqual(['read', 'write']);
-
-    // 重复确认被拒绝。
-    expect(() => designer.approveProposal(proposal.id)).toThrow(/不能重复确认/);
+    expect(record.decidedAt).not.toBeNull();
   });
 
-  it('rejecting a proposal leaves the system unchanged', async () => {
+  it('marks a change failed when a step cannot apply, keeping earlier steps', async () => {
+    // 前置校验只做存在性检查，「删除仍被流水线使用的智能体」能通过校验、在执行时失败。
     let call = 0;
     const { designer, store } = createHarness(() => {
       call += 1;
       if (call === 1) {
-        return toolCall('propose_changes', {
-          title: '建技能',
-          summary: '测试',
-          changes: [{ op: 'create_skill', skill: { name: '写作规范', description: 'x', content: '# 写作规范' } }],
-        });
-      }
-      return textReply('好');
-    });
-    const session = designer.createSession();
-    designer.sendMessage(session.id, '建个技能');
-    const proposal = await waitFor(() => designer.getSessionDetail(session.id).proposals[0] ?? null);
-    const rejected = designer.rejectProposal(proposal.id);
-    expect(rejected.status).toBe('rejected');
-    expect(store.listSkills()).toHaveLength(0);
-    expect(() => designer.rejectProposal(proposal.id)).toThrow(/不能重复驳回/);
-  });
-
-  it('marks a proposal failed when a change cannot apply, keeping earlier steps', async () => {
-    // 提案阶段只做存在性校验，因此「删除仍被流水线使用的智能体」能通过提案、在应用时失败。
-    let call = 0;
-    const { designer, store } = createHarness(() => {
-      call += 1;
-      if (call === 1) {
-        return toolCall('propose_changes', {
+        return toolCall('apply_changes', {
           title: '建新岗并删旧岗',
-          summary: '第 2 项在应用时应被「仍被流水线使用」拦下。',
+          summary: '第 2 项在执行时应被「仍被流水线使用」拦下。',
           changes: [
             { op: 'create_agent', agent: { name: '新岗', description: 'x', responsibilities: 'x' } },
             { op: 'delete_agent', agentName: '旧岗' },
@@ -391,25 +363,23 @@ describe('designer proposals', () => {
 
     const session = designer.createSession();
     designer.sendMessage(session.id, '测试失败路径');
-    const proposal = await waitFor(() => designer.getSessionDetail(session.id).proposals[0] ?? null);
-    expect(proposal.status).toBe('pending');
-
-    const failed = designer.approveProposal(proposal.id);
-    expect(failed.status).toBe('failed');
-    expect(failed.error).toContain('失败');
-    expect(failed.error).toContain('前 1 项已生效');
+    await waitForIdle(designer);
+    const record = designer.getSessionDetail(session.id).proposals[0];
+    expect(record.status).toBe('failed');
+    expect(record.error).toContain('失败');
+    expect(record.error).toContain('前 1 项已生效');
     // 第 1 项已生效并保留，第 2 项失败后旧岗与流水线原样保留。
     expect(store.getAgentByName('新岗')).not.toBeNull();
     expect(store.getAgentByName('旧岗')).not.toBeNull();
     expect(store.listPipelines()).toHaveLength(1);
   });
 
-  it('blocks proposals that modify or delete the designer itself', async () => {
+  it('blocks changes that modify or delete the designer itself', async () => {
     let call = 0;
     const { designer } = createHarness(() => {
       call += 1;
       if (call === 1) {
-        return toolCall('propose_changes', {
+        return toolCall('apply_changes', {
           title: '自我修改',
           summary: '不允许',
           changes: [{ op: 'delete_agent', agentName: '流水线设计师' }],
@@ -423,7 +393,7 @@ describe('designer proposals', () => {
     const detail = designer.getSessionDetail(session.id);
     expect(detail.proposals).toHaveLength(0);
     const toolMessage = detail.messages.find((message) => message.role === 'tool');
-    expect(toolMessage?.content).toContain('不能通过提案修改或删除');
+    expect(toolMessage?.content).toContain('不能通过 apply_changes 修改或删除');
     expect(call).toBe(2);
   });
 
@@ -432,7 +402,7 @@ describe('designer proposals', () => {
     const { designer, store } = createHarness(() => {
       call += 1;
       if (call === 1) {
-        return toolCall('propose_changes', {
+        return toolCall('apply_changes', {
           title: '建两环节流水线',
           summary: '节点 agentId 直接填智能体名称。',
           changes: [
@@ -457,9 +427,7 @@ describe('designer proposals', () => {
     store.createAgent({ name: '去处', description: 'x', responsibilities: 'x' });
     const session = designer.createSession();
     designer.sendMessage(session.id, '搭一条两环节流水线');
-    const proposal = await waitFor(() => designer.getSessionDetail(session.id).proposals[0] ?? null);
-    const applied = designer.approveProposal(proposal.id);
-    expect(applied.status).toBe('applied');
+    await waitForIdle(designer);
     const pipeline = store.listPipelines()[0];
     expect(pipeline.nodes.map((node) => store.getAgent(node.agentId)?.name)).toEqual(['来源', '去处']);
     expect(pipeline.edges).toHaveLength(1);
@@ -468,16 +436,16 @@ describe('designer proposals', () => {
   });
 });
 
-describe('designer proposal reference resolution（同提案先创建、后引用）', () => {
-  it('applies one proposal that creates skills, agents and a pipeline together', async () => {
+describe('designer change reference resolution（同一次变更先创建、后引用）', () => {
+  it('applies one change set that creates skills, agents and a pipeline together', async () => {
     // 复现反馈 3dcd1a1b 的场景：create_skill ×2 → create_agent（引用同批技能）→ create_pipeline（引用同批智能体）。
     let call = 0;
     const { designer, store } = createHarness(() => {
       call += 1;
       if (call === 1) {
-        return toolCall('propose_changes', {
-          title: '一次提案搭完整流水线',
-          summary: '技能 → 智能体 → 流水线，同提案内先创建、后引用。',
+        return toolCall('apply_changes', {
+          title: '一次变更搭完整流水线',
+          summary: '技能 → 智能体 → 流水线，同一次变更内先创建、后引用。',
           changes: [
             { op: 'create_skill', skill: { name: '分析方法论', description: 'x', content: '# 方法论' } },
             { op: 'create_skill', skill: { name: '资源档案', description: 'x', content: '# 档案' } },
@@ -507,11 +475,9 @@ describe('designer proposal reference resolution（同提案先创建、后引�
     });
     const session = designer.createSession();
     designer.sendMessage(session.id, '一次性搭好整条流水线');
-    const proposal = await waitFor(() => designer.getSessionDetail(session.id).proposals[0] ?? null);
-    expect(proposal.status).toBe('pending');
-
-    const applied = designer.approveProposal(proposal.id);
-    expect(applied.status).toBe('applied');
+    await waitForIdle(designer);
+    const record = designer.getSessionDetail(session.id).proposals[0];
+    expect(record.status).toBe('applied');
     const skills = store.listSkills();
     expect(skills.map((skill) => skill.name)).toEqual(['分析方法论', '资源档案']);
     const methodology = skills.find((skill) => skill.name === '分析方法论')!;
@@ -529,7 +495,7 @@ describe('designer proposal reference resolution（同提案先创建、后引�
     const { designer } = createHarness(() => {
       call += 1;
       if (call === 1) {
-        return toolCall('propose_changes', {
+        return toolCall('apply_changes', {
           title: '后向引用',
           summary: '引用后序才创建的技能。',
           changes: [
@@ -555,7 +521,7 @@ describe('designer proposal reference resolution（同提案先创建、后引�
     const { designer, store } = createHarness(() => {
       call += 1;
       if (call === 1) {
-        return toolCall('propose_changes', {
+        return toolCall('apply_changes', {
           title: '先建后删',
           summary: '同一对象先创建又删除。',
           changes: [
@@ -576,14 +542,14 @@ describe('designer proposal reference resolution（同提案先创建、后引�
     expect(store.listSkills()).toHaveLength(0);
   });
 
-  it('rejects referencing an object deleted earlier in the same proposal', async () => {
+  it('rejects referencing an object deleted earlier in the same change set', async () => {
     let call = 0;
     const { designer, store } = createHarness(() => {
       call += 1;
       if (call === 1) {
-        return toolCall('propose_changes', {
+        return toolCall('apply_changes', {
           title: '先删后引',
-          summary: '引用被本提案删除的技能。',
+          summary: '引用被本变更删除的技能。',
           changes: [
             { op: 'delete_skill', skillName: '旧规范' },
             { op: 'create_agent', agent: { name: '引用者', description: 'x', responsibilities: 'x', skillIds: ['旧规范'] } },
@@ -599,7 +565,7 @@ describe('designer proposal reference resolution（同提案先创建、后引�
     const detail = designer.getSessionDetail(session.id);
     expect(detail.proposals).toHaveLength(0);
     const toolMessage = detail.messages.find((message) => message.role === 'tool');
-    expect(toolMessage?.content).toContain('已在本提案第 1 项被删除');
+    expect(toolMessage?.content).toContain('已在本变更第 1 项被删除');
     // 校验失败：删除没有发生，技能原样保留。
     expect(store.listSkills()).toHaveLength(1);
   });
@@ -609,7 +575,7 @@ describe('designer proposal reference resolution（同提案先创建、后引�
     const { designer } = createHarness(() => {
       call += 1;
       if (call === 1) {
-        return toolCall('propose_changes', {
+        return toolCall('apply_changes', {
           title: '重复创建',
           summary: '同名技能创建两次。',
           changes: [
@@ -629,12 +595,12 @@ describe('designer proposal reference resolution（同提案先创建、后引�
     expect(toolMessage?.content).toContain('重复创建同名技能');
   });
 
-  it('allows delete-then-recreate of the same name in one proposal', async () => {
+  it('allows delete-then-recreate of the same name in one change set', async () => {
     let call = 0;
     const { designer, store } = createHarness(() => {
       call += 1;
       if (call === 1) {
-        return toolCall('propose_changes', {
+        return toolCall('apply_changes', {
           title: '删旧建新',
           summary: '删除旧技能后按同名重建。',
           changes: [
@@ -648,8 +614,8 @@ describe('designer proposal reference resolution（同提案先创建、后引�
     const oldSkill = store.createSkill({ name: '旧版技能', content: '# 旧版' });
     const session = designer.createSession();
     designer.sendMessage(session.id, '删除并重建技能');
-    const proposal = await waitFor(() => designer.getSessionDetail(session.id).proposals[0] ?? null);
-    const applied = designer.approveProposal(proposal.id);
+    await waitForIdle(designer);
+    const applied = designer.getSessionDetail(session.id).proposals[0];
     expect(applied.status).toBe('applied');
     const skills = store.listSkills();
     expect(skills).toHaveLength(1);
@@ -782,18 +748,19 @@ describe('designer single conversation（压缩上下文 / 清空对话记录）
     await waitForIdle(designer);
   });
 
-  it('clears the conversation: messages, proposals (incl. pending) and uploads go, workspace stays', async () => {
+  it('clears the conversation: messages, change records and uploads go, workspace stays', async () => {
     const { designer, store } = createHarness(() => textReply('回复'));
     const session = designer.createSession();
     designer.sendMessage(session.id, '清空测试');
     await waitForIdle(designer);
     const upload = store.saveDesignerUpload(session.id, '附件.txt', Buffer.from('内容'));
-    const proposal = store.createDesignerProposal({
+    const record = store.createDesignerProposal({
       sessionId: session.id,
       messageId: null,
-      title: '待确认提案',
+      title: '已生效的变更',
       summary: '',
       changes: [],
+      status: 'applied',
     });
     const workspaceFile = path.join(store.designerWorkspaceDir(), '产出.md');
     fs.writeFileSync(workspaceFile, '保留我');
@@ -801,7 +768,7 @@ describe('designer single conversation（压缩上下文 / 清空对话记录）
     designer.clearConversation();
     expect(designer.listSessions()).toHaveLength(0);
     expect(store.listDesignerMessages(session.id)).toHaveLength(0);
-    expect(store.getDesignerProposal(proposal.id)).toBeNull();
+    expect(store.getDesignerProposal(record.id)).toBeNull();
     expect(fs.existsSync(path.join(store.designerWorkspaceDir(), upload.path))).toBe(false);
     // 工作目录文件与设计师智能体保留。
     expect(fs.existsSync(workspaceFile)).toBe(true);
@@ -965,13 +932,13 @@ describe('designer profile', () => {
     expect(profile.agent.slug).toBe('designer');
     // 系统提示词是实时拼装版（含全局清单与工作规则）。
     expect(profile.systemPrompt).toContain('系统现状');
-    expect(profile.systemPrompt).toContain('propose_changes');
+    expect(profile.systemPrompt).toContain('apply_changes');
     expect(profile.systemPrompt).toContain('工作目录');
 
     // 工具 = 生效内置/自定义（过滤 handoff）+ 设计师专属管理工具。
     const sourceOf = new Map(profile.tools.map((tool) => [tool.name, tool.source]));
     expect(sourceOf.get('read')).toBe('builtin');
-    expect(sourceOf.get('propose_changes')).toBe('designer');
+    expect(sourceOf.get('apply_changes')).toBe('designer');
     expect(sourceOf.get('get_agent')).toBe('designer');
     expect(profile.tools.map((tool) => tool.name)).not.toContain('handoff');
 
@@ -1003,7 +970,7 @@ describe('designer run records & feedback loop', () => {
       if (call === 1) return toolCall('list_tasks', { limit: 10 });
       if (call === 2) return toolCall('get_task', { id: taskId.slice(0, 8), turn_id: turnId.slice(0, 8) });
       if (call === 3) {
-        return toolCall('resolve_feedback', { id: feedbackId.slice(0, 8), status: 'resolved', note: '已转为改进提案' });
+        return toolCall('resolve_feedback', { id: feedbackId.slice(0, 8), status: 'resolved', note: '已转为改进' });
       }
       return textReply('复盘完成');
     });
@@ -1055,7 +1022,7 @@ describe('designer run records & feedback loop', () => {
     expect(resolveOutput).toBeDefined();
     expect(resolveOutput!.content).toContain('已标记为「resolved」');
     expect(store.getFeedback(feedback.id)!.status).toBe('resolved');
-    expect(store.getFeedback(feedback.id)!.resolutionNote).toContain('改进提案');
+    expect(store.getFeedback(feedback.id)!.resolutionNote).toContain('已转为改进');
   });
 
   it('list_feedback returns the full snapshot when given an id', async () => {

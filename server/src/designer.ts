@@ -7,7 +7,6 @@ import type {
   DesignerChangeOp,
   DesignerMessage,
   DesignerProfile,
-  DesignerProposal,
   DesignerSession,
   DesignerSessionDetail,
   DesignerSessionSummary,
@@ -69,20 +68,38 @@ function renderAttachmentNote(attachments: DesignerAttachment[]): string {
   return `${ATTACHMENT_NOTE_HEADER}\n${lines.join('\n')}`;
 }
 
+/**
+ * 旧版「提案 + 界面确认」流程的默认档案文案（原样保留用于一次性迁移比对）：
+ * 已有库里设计师档案若仍是这三段原文，启动时自动刷新为新默认；人类改过的字段不动。
+ */
+const LEGACY_DESIGNER_DESCRIPTION =
+  '系统的流水线设计师与管理员：与用户对话澄清需求，以提案方式搭建和优化智能体、流水线、工具与技能。';
+const LEGACY_DESIGNER_RESPONSIBILITIES =
+  '你代替人类用户管理整套智能体流水线系统：\n' +
+  '1. 与用户对话，澄清用户想要的自动化流程、角色分工与交付物；\n' +
+  '2. 设计高质量的角色定义（职责、交付要求、工作指南、工具配置）与流水线连接（任务触发提示词、交接条件）；\n' +
+  '3. 以提案方式创建和优化智能体、流水线、自定义工具与技能，所有变更经用户确认后由系统执行；\n' +
+  '4. 查看智能体提交的系统反馈，把有价值的反馈转化为改进提案。';
+const LEGACY_DESIGNER_GUIDE =
+  '先讨论后提案：需求不清时先提问澄清，方案复杂时先在回复里给出设计要点，与用户达成一致后再提交提案；' +
+  '提案中的每项变更都要完整自包含、能独立执行成功；优先复用已有的智能体、工具与技能，避免重复建设；' +
+  '变更生效后建议用户试运行验证，用 list_tasks / get_task 查看运行记录、用 list_feedback 收集智能体的反馈，持续迭代优化。';
+
 /** 设计师的默认档案：仅首次创建时使用；之后它的定义由人类在智能体页维护。 */
 const DESIGNER_DEFAULT_DEFINITION: AgentInput = {
   name: '流水线设计师',
-  description: '系统的流水线设计师与管理员：与用户对话澄清需求，以提案方式搭建和优化智能体、流水线、工具与技能。',
+  description: '系统的流水线设计师与管理员：与用户对话澄清需求、讲清设计思路，经用户认可后直接搭建和优化智能体、流水线、工具与技能。',
   responsibilities:
     '你代替人类用户管理整套智能体流水线系统：\n' +
-    '1. 与用户对话，澄清用户想要的自动化流程、角色分工与交付物；\n' +
+    '1. 与用户对话，澄清用户想要的自动化流程、角色分工与交付物，有疑问就问，直到需求清晰；\n' +
     '2. 设计高质量的角色定义（职责、交付要求、工作指南、工具配置）与流水线连接（任务触发提示词、交接条件）；\n' +
-    '3. 以提案方式创建和优化智能体、流水线、自定义工具与技能，所有变更经用户确认后由系统执行；\n' +
-    '4. 查看智能体提交的系统反馈，把有价值的反馈转化为改进提案。',
+    '3. 把设计思路简明讲给用户听，经用户认可后直接创建和优化智能体、流水线、自定义工具与技能，全程以对话完成；\n' +
+    '4. 查看智能体提交的系统反馈，把有价值的反馈转化为改进。',
   deliverable: '',
   guide:
-    '先讨论后提案：需求不清时先提问澄清，方案复杂时先在回复里给出设计要点，与用户达成一致后再提交提案；' +
-    '提案中的每项变更都要完整自包含、能独立执行成功；优先复用已有的智能体、工具与技能，避免重复建设；' +
+    '先问清楚、再讲思路、认可即动手：需求有疑问就提问澄清，需求清晰后用几句话讲出设计重点（角色分工、流转顺序、交付物、对现有系统的影响），' +
+    '用户认可思路后立即执行变更，不再等任何确认操作；讲思路只讲重点，用户想深入细节会自己追问；' +
+    '每项变更都要完整自包含、能独立执行成功；优先复用已有的智能体、工具与技能，避免重复建设；' +
     '变更生效后建议用户试运行验证，用 list_tasks / get_task 查看运行记录、用 list_feedback 收集智能体的反馈，持续迭代优化。',
   model: null,
   temperature: 0.3,
@@ -285,7 +302,7 @@ function optionalString(value: unknown, max: number): string {
 
 /**
  * 智能体负载里的技能与自定义工具引用兼容「名称或 id」：
- * 应用提案前统一解析成 id（store 层按 id 校验存在性）。
+ * 应用变更前统一解析成 id（store 层按 id 校验存在性）。
  */
 function normalizeAgentInput<T extends Partial<AgentInput>>(store: Store, input: T): T {
   const skillIds = Array.isArray(input.skillIds)
@@ -322,7 +339,7 @@ function normalizeAgentInput<T extends Partial<AgentInput>>(store: Store, input:
 
 /**
  * 设计师的系统提示词：与流水线智能体不同，它没有任务工作区与交接关系，
- * 取而代之的是系统清单（全局视角）、提案规则与系统级工作目录。
+ * 取而代之的是系统清单（全局视角）、变更规则与系统级工作目录。
  */
 export function assembleDesignerSystemPrompt(store: Store, agent: Agent, workspaceDir: string): string {
   const agents = store.listAgents().filter((item) => item.slug !== DESIGNER_SLUG);
@@ -395,12 +412,12 @@ export function assembleDesignerSystemPrompt(store: Store, agent: Agent, workspa
     '- 分支：节点有多条出边时，每条出边的交接条件会注入该节点的系统提示词，由它判断后用 handoff 的 target 指定交给谁；没有合适交接对象时它应不交接并如实说明卡点。',
     '- 异常：环节执行失败、没有产生有效交接或被中断时，任务暂停停在该环节，用户可以「重试本环节」（可附补充指示）或终止任务；终点环节交付后任务进入等待验收，由用户确认完成或重试。',
     '- 约束：任务启动时固化流水线快照，之后修改流水线不影响进行中与历史任务；单任务最多 200 个环节（防循环）；不支持并行分支，返工靠把连线指回上游实现。',
-    '- 图校验（提案被拒的常见原因，提交前自查）：恰好一个显式起点；所有节点从起点可达；至少一个终点（无出线节点）；每条连线必填触发提示词；多出边节点的每条出边必填交接条件；同一智能体在一条流水线内只能出现一次；最多 30 个节点、300 条连线；你自己不能作为流水线节点。',
+    '- 图校验（变更被拒的常见原因，提交前自查）：恰好一个显式起点；所有节点从起点可达；至少一个终点（无出线节点）；每条连线必填触发提示词；多出边节点的每条出边必填交接条件；同一智能体在一条流水线内只能出现一次；最多 30 个节点、300 条连线；你自己不能作为流水线节点。',
     '',
     '# 试运行与迭代',
     '- 试运行由用户在「任务」页发起：你不能自己启动任务，也不要声称已经替用户验证过流水线；设计完成后应主动建议用户试运行。',
-    '- 用户试运行后，用 list_tasks 查看任务与状态，用 get_task 复盘环节链路、每环节的输入/输出/交接与错误（必要时给 get_task 传 turn_id 细看某环节的系统提示词与消息记录），据此提出修正提案。',
-    '- 反馈闭环：智能体干活时会把踩过的坑与建议通过 submit_feedback 提交上来；用 list_feedback 读取（传 id 可看全文），把有价值的转成改进提案，处理完用 resolve_feedback 关闭，保持待处理清单干净。',
+    '- 用户试运行后，用 list_tasks 查看任务与状态，用 get_task 复盘环节链路、每环节的输入/输出/交接与错误（必要时给 get_task 传 turn_id 细看某环节的系统提示词与消息记录），据此向用户说明问题并给出修正思路。',
+    '- 反馈闭环：智能体干活时会把踩过的坑与建议通过 submit_feedback 提交上来；用 list_feedback 读取（传 id 可看全文），把有价值的转成改进思路，与用户达成一致后直接执行，处理完用 resolve_feedback 关闭，保持待处理清单干净。',
     '- 迭代节奏：小步修改（一次聚焦一个环节或一条连线）→ 请用户再跑一次试运行 → 根据运行记录确认收敛后再继续。智能体可能被多条流水线复用，修改它会同时影响所有引用它的流水线。',
     '',
     '# 设计要领',
@@ -411,16 +428,16 @@ export function assembleDesignerSystemPrompt(store: Store, agent: Agent, workspa
     '- 长任务建议设置 maxIterations 上限，防止单环节失控。',
     '',
     '# 工作规则',
-    '1. 所有对智能体、流水线、自定义工具、技能的变更都必须通过 propose_changes 提交提案；用户在界面上点击「确认应用」后，系统才会按提案执行。用户确认之前不要声称变更已生效，可以说「已提交提案，等待确认」。',
-    '2. 先讨论后提案：需求不清楚时先提问澄清；方案较复杂时先在回复中给出设计要点（角色分工、流转顺序、交付物），与用户达成一致后再提交提案。',
-    '3. 一次提案聚焦一个目标。每项变更必须完整自包含：创建智能体时写全职责、交付要求与工作指南；创建流水线时为每条连线写好任务触发提示词，多出边的节点为每条出边写清交接条件。',
+    '1. 与用户的协作全程以对话完成，用户不需要点击任何确认按钮。节奏是：需求有疑问就先提问澄清（一次把关键问题问完：分工、顺序、交付物、边界），需求清晰后先简明讲出设计思路（角色分工、流转顺序、交付物、对现有系统的影响，只讲重点，用户想深入细节会自己追问），用户认可思路后立即调用 apply_changes 执行。',
+    '2. 用户没有认可思路之前不要调用 apply_changes；用户对思路提出异议或补充时，先调整思路、重新讲给用户听，达成一致后再执行。执行成功后向用户简要汇报结果并建议试运行；不要在用户认可前声称变更已生效。',
+    '3. 一次变更聚焦一个目标。每项变更必须完整自包含：创建智能体时写全职责、交付要求与工作指南；创建流水线时为每条连线写好任务触发提示词，多出边的节点为每条出边写清交接条件。',
     '4. update_pipeline 是整图替换：先 get_pipeline 查看现状，再提交完整的新图（所有节点与连线），不要只提交增量。',
-    '5. 流水线的 nodes 中 agentId 字段可以直接填智能体名称；连线 from/to 填节点 id；没有起点标记或不可达、缺触发提示词的提案会被系统拒绝。',
-    '6. 任务型智能体的内置工具（bash、pwsh、read、write、edit、glob、grep、list_dir、read_image、web_search、web_fetch、handoff、load_skill、submit_feedback）由系统统一授予，不可裁剪也不可修改；其中 handoff 是流水线环节专用的交接工具，只注入给任务环节，你没有也不需要它。智能体档案里的内置工具开关字段已不生效（保留仅为兼容）。你只能通过提案管理自定义工具与技能。',
-    '7. 不能通过提案修改或删除你自己（流水线设计师）；你的定义由人类维护。',
-    '8. 查看详情用 get_agent / get_pipeline / get_skill / get_custom_tool / list_feedback；引用已有对象时提案里用名称字段（agentName、pipelineName、toolName、skillName）。同一提案内「先创建、后引用」按变更顺序解析：后项可以直接引用前项新建的技能、智能体、工具或流水线；引用只能指向系统已有对象或前序变更创建的对象，不要引用后序才创建的对象，也不要在同一提案里先创建又删除同一对象。',
-    '9. 用户在提案卡片上自行决定确认或驳回；应用失败时系统会把错误写回提案，你可以给出修正提案。',
-    '10. 提案规模限制：一次最多 20 项变更；智能体名称 1-40 字符且全局唯一，一句话描述不超过 300 字符；自定义工具名以小写字母开头（只能含小写字母、数字、下划线）；职责、交付要求、工作指南、触发提示词、交接条件均不超过 2 万字符。',
+    '5. 流水线的 nodes 中 agentId 字段可以直接填智能体名称；连线 from/to 填节点 id；没有起点标记或不可达、缺触发提示词的变更会被系统拒绝。',
+    '6. 任务型智能体的内置工具（bash、pwsh、read、write、edit、glob、grep、list_dir、read_image、web_search、web_fetch、handoff、load_skill、submit_feedback）由系统统一授予，不可裁剪也不可修改；其中 handoff 是流水线环节专用的交接工具，只注入给任务环节，你没有也不需要它。智能体档案里的内置工具开关字段已不生效（保留仅为兼容）。你只能通过 apply_changes 管理自定义工具与技能。',
+    '7. 不能通过 apply_changes 修改或删除你自己（流水线设计师）；你的定义由人类维护。',
+    '8. 查看详情用 get_agent / get_pipeline / get_skill / get_custom_tool / list_feedback；引用已有对象时变更里用名称字段（agentName、pipelineName、toolName、skillName）。同一变更内「先创建、后引用」按变更顺序解析：后项可以直接引用前项新建的技能、智能体、工具或流水线；引用只能指向系统已有对象或前序变更创建的对象，不要引用后序才创建的对象，也不要在同一变更里先创建又删除同一对象。',
+    '9. apply_changes 按顺序执行：某项失败时，前面已成功的项保持生效，系统会返回错误信息与已生效清单；向用户如实说明进度，修正失败项后把剩余部分作为新的 apply_changes 重新执行，不要声称失败项已生效。',
+    '10. 变更规模限制：一次最多 20 项变更；智能体名称 1-40 字符且全局唯一，一句话描述不超过 300 字符；自定义工具名以小写字母开头（只能含小写字母、数字、下划线）；职责、交付要求、工作指南、触发提示词、交接条件均不超过 2 万字符。',
     '',
     '# 工作区',
     `- 你的专属工作目录（系统级、跨会话持久，不属于任何任务）：${workspaceDir}`,
@@ -441,7 +458,7 @@ export function assembleDesignerSystemPrompt(store: Store, agent: Agent, workspa
 
 function assertNotDesigner(agent: Agent): void {
   if (agent.slug === DESIGNER_SLUG) {
-    throw new AppError(409, '不能通过提案修改或删除「流水线设计师」自己');
+    throw new AppError(409, '不能通过 apply_changes 修改或删除「流水线设计师」自己');
   }
 }
 
@@ -487,7 +504,7 @@ function resolveSkillRef(store: Store, ref: { skillId?: string; skillName?: stri
   throw new AppError(404, `找不到要操作的技能「${name || ref.skillId || '未指定'}」`);
 }
 
-/** 流水线 nodes 的 agentId 字段兼容智能体名称：应用提案前统一解析成真实 id。 */
+/** 流水线 nodes 的 agentId 字段兼容智能体名称：应用变更前统一解析成真实 id。 */
 function resolvePipelineInput(store: Store, input: PipelineInput): PipelineInput {
   return {
     ...input,
@@ -502,7 +519,7 @@ function resolvePipelineInput(store: Store, input: PipelineInput): PipelineInput
   };
 }
 
-/** 执行提案里的一项变更，返回给用户的执行结果说明。原样抛出 AppError。 */
+/** 执行变更里的一项变更，返回给用户的执行结果说明。原样抛出 AppError。 */
 export function applyChangeOp(store: Store, change: DesignerChangeOp): string {
   switch (change.op) {
     case 'create_agent': {
@@ -576,13 +593,14 @@ export function applyChangeOp(store: Store, change: DesignerChangeOp): string {
 /* designer-only tools                                                 */
 /* ------------------------------------------------------------------ */
 
-const PROPOSE_CHANGES_DESCRIPTION =
-  '提交一次结构化变更提案（新建/修改/删除智能体、流水线、自定义工具、技能）。' +
-  '提案在用户于界面点击「确认应用」后才由系统按顺序原样执行；驳回不生效；应用失败时系统把错误写回提案。' +
+const APPLY_CHANGES_DESCRIPTION =
+  '应用一次结构化变更（新建/修改/删除智能体、流水线、自定义工具、技能），按顺序立即执行、马上生效，用户无需再点任何确认按钮。' +
+  '调用前提：需求已澄清、设计思路已经用户认可；用户还没认可思路时不要调用。' +
   'changes 每一项的结构见参数 schema（按 op 判别的 12 种变更）。' +
   '引用已有对象一律用名称字段（agentName / pipelineName / toolName / skillName）；' +
-  '同一提案内「先创建、后引用」按变更顺序解析，可以直接引用前序变更创建的对象，但不要引用后序才创建的对象、也不要先创建又删除同一对象；' +
-  '不能对流水线设计师自己发起变更；update_pipeline 是整图替换，先 get_pipeline 查看现状再提交完整新图。';
+  '同一变更内「先创建、后引用」按变更顺序解析，可以直接引用前序变更创建的对象，但不要引用后序才创建的对象、也不要先创建又删除同一对象；' +
+  '不能对流水线设计师自己发起变更；update_pipeline 是整图替换，先 get_pipeline 查看现状再提交完整新图。' +
+  '部分失败时已成功的项保持生效，工具结果会说明失败原因与已生效清单。';
 
 /** 智能体定义的参数描述（create_agent 全量必填 name，update_agent 全部可选，避免两份重复）。 */
 const AGENT_FIELDS_PROPERTIES: Record<string, unknown> = {
@@ -632,7 +650,7 @@ const REF_SKILL = {
   skillName: { type: 'string', description: '技能名称（与 skillId 二选一）' },
 };
 
-/** propose_changes 的 changes 数组项：12 种变更操作的结构定义（工具描述只讲用途，参数细节统一写在这里）。 */
+/** apply_changes 的 changes 数组项：12 种变更操作的结构定义（工具描述只讲用途，参数细节统一写在这里）。 */
 const PROPOSE_CHANGE_ITEM_SCHEMA: Record<string, unknown> = {
   type: 'object',
   description: '一项变更操作，按 op 字段判别类型；字段细节见各分支 schema',
@@ -740,7 +758,7 @@ const PROPOSE_CHANGE_ITEM_SCHEMA: Record<string, unknown> = {
 interface DesignerToolDeps {
   store: Store;
   sessionId: string;
-  /** 当前回合里触发工具调用的助手消息 id：提案与卡片渲染位置的关联。 */
+  /** 当前回合里触发工具调用的助手消息 id：变更与卡片渲染位置的关联。 */
   link: { messageId: string | null };
   publish: (event: Omit<RealtimeEvent, 'at'>) => void;
 }
@@ -1064,7 +1082,7 @@ function makeDesignerTools(deps: DesignerToolDeps, metas?: DesignerToolMeta[]): 
 
   add(
     'resolve_feedback',
-    '处理完一条反馈后关闭它：转化为改进提案的标记 resolved，决定不处理的标记 ignored，可附处理备注。保持反馈清单只剩待处理项。',
+    '处理完一条反馈后关闭它：已转化为改进的标记 resolved，决定不处理的标记 ignored，可附处理备注。保持反馈清单只剩待处理项。',
     {
       type: 'object',
       properties: {
@@ -1093,13 +1111,13 @@ function makeDesignerTools(deps: DesignerToolDeps, metas?: DesignerToolMeta[]): 
   );
 
   add(
-    'propose_changes',
-    PROPOSE_CHANGES_DESCRIPTION,
+    'apply_changes',
+    APPLY_CHANGES_DESCRIPTION,
     {
       type: 'object',
       properties: {
-        title: { type: 'string', description: '提案标题（一句话概括这次变更）' },
-        summary: { type: 'string', description: '提案说明：要达成什么、设计思路、对现有系统的影响' },
+        title: { type: 'string', description: '变更标题（一句话概括这次变更）' },
+        summary: { type: 'string', description: '变更说明：要达成什么、设计思路、对现有系统的影响' },
         changes: {
           type: 'array',
           minItems: 1,
@@ -1111,13 +1129,13 @@ function makeDesignerTools(deps: DesignerToolDeps, metas?: DesignerToolMeta[]): 
       required: ['title', 'summary', 'changes'],
     },
     (args) => {
-      const title = requireString(args.title, '提案标题 title', 120);
-      const summary = requireString(args.summary, '提案说明 summary', 2000);
+      const title = requireString(args.title, '变更标题 title', 120);
+      const summary = requireString(args.summary, '变更说明 summary', 2000);
       const rawChanges = args.changes;
       if (!Array.isArray(rawChanges) || rawChanges.length === 0) {
         throw new AppError(400, 'changes 必须是非空数组');
       }
-      if (rawChanges.length > 20) throw new AppError(400, '一次提案最多包含 20 项变更');
+      if (rawChanges.length > 20) throw new AppError(400, '一次最多包含 20 项变更');
 
       const changes: DesignerChangeOp[] = rawChanges.map((item, index) => {
         if (typeof item !== 'object' || item === null || Array.isArray(item)) {
@@ -1127,17 +1145,39 @@ function makeDesignerTools(deps: DesignerToolDeps, metas?: DesignerToolMeta[]): 
       });
       validateChangeOps(store, changes);
 
-      const proposal = store.createDesignerProposal({
+      // 设计思路已获用户认可：立即按顺序执行，变更记录（含结果）落库展示给用户。
+      const applied: string[] = [];
+      let failure: string | null = null;
+      for (const [index, change] of changes.entries()) {
+        try {
+          applied.push(applyChangeOp(store, change));
+        } catch (error) {
+          const prefix = applied.length > 0 ? `前 ${applied.length} 项已生效：${applied.join('；')}。` : '';
+          failure = `第 ${index + 1} 项变更失败：${errorMessage(error)}。${prefix}`;
+          break;
+        }
+      }
+
+      const record = store.createDesignerProposal({
         sessionId: deps.sessionId,
         messageId: deps.link.messageId,
         title,
         summary,
         changes,
+        status: failure ? 'failed' : 'applied',
+        error: failure ?? undefined,
       });
-      deps.publish({ type: 'designer.proposal', sessionId: deps.sessionId, proposalId: proposal.id });
+      deps.publish({ type: 'designer.proposal', sessionId: deps.sessionId, proposalId: record.id });
+      deps.publish({ type: 'config.updated' });
+      if (failure) {
+        return (
+          `变更中断，已生效的部分保持生效（编号 ${record.id.slice(0, 8)}）。${failure}` +
+          '请向用户如实说明已生效与失败的内容，修正后把剩余部分作为新的 apply_changes 重新执行。'
+        );
+      }
       return (
-        `提案已提交（编号 ${proposal.id.slice(0, 8)}，共 ${changes.length} 项变更），卡片已展示给用户。` +
-        '等待用户确认，确认前该提案不会生效；不要重复提交相同内容的提案。'
+        `变更已全部生效（编号 ${record.id.slice(0, 8)}，共 ${applied.length} 项）：${applied.join('；')}。` +
+        '向用户简要汇报结果，并建议试运行验证。'
       );
     },
   );
@@ -1146,7 +1186,7 @@ function makeDesignerTools(deps: DesignerToolDeps, metas?: DesignerToolMeta[]): 
 }
 
 /* ------------------------------------------------------------------ */
-/* proposal validation（提案覆盖层：支持同一提案内先创建、后引用）          */
+/* change validation（覆盖层：支持同一变更内先创建、后引用）               */
 /* ------------------------------------------------------------------ */
 
 /** 覆盖层跟踪的实体类别。 */
@@ -1178,13 +1218,13 @@ function createTargetOf(change: DesignerChangeOp): { kind: OverlayKind; name: st
 }
 
 /**
- * 提案内覆盖层：按顺序模拟提案应用，让前置校验能解析「同一提案内先创建、后引用」。
+ * 变更内覆盖层：按顺序模拟变更应用，让前置校验能解析「同一变更内先创建、后引用」。
  * - 只认前序变更创建的对象（与应用阶段的顺序语义一致），后向引用会得到明确报错；
- * - 「先建后删」属于矛盾提案、「先删后引」属于悬空引用，都在校验期拦截；
+ * - 「先建后删」属于矛盾变更、「先删后引」属于悬空引用，都在校验期拦截；
  * - 墓碑同时记录 id 与名称（名称小写归一），后续引用无论用哪种写法都能识别。
  */
 class ProposalOverlay {
-  /** 全提案 create 预扫描：kind -> 名称(小写) -> 首次创建的变更下标，用于「后向引用」提示。 */
+  /** 全变更 create 预扫描：kind -> 名称(小写) -> 首次创建的变更下标，用于「后向引用」提示。 */
   private readonly creates = new Map<OverlayKind, Map<string, number>>();
   /** 待生效的创建：kind -> 名称(小写) -> 变更下标（删除后移除）。 */
   private readonly pending = new Map<OverlayKind, Map<string, number>>();
@@ -1268,7 +1308,7 @@ function getFromStore(store: Store, kind: OverlayKind, value: string): unknown {
   }
 }
 
-/** 引用解析结果：store 命中（携带对象）、提案内创建，或两种失败形态（供报错提示区分）。 */
+/** 引用解析结果：store 命中（携带对象）、变更内创建，或两种失败形态（供报错提示区分）。 */
 type RefLookup =
   | { status: 'store'; storeObject: unknown }
   | { status: 'proposal'; createdAtIndex: number }
@@ -1276,7 +1316,7 @@ type RefLookup =
   | { status: 'missing' };
 
 /**
- * 解析一个对象引用：系统已有（未被本提案删除）或前序变更创建。
+ * 解析一个对象引用：系统已有（未被本变更删除）或前序变更创建。
  * 不抛错，失败形态交给调用方按场景提示；名称缺省时回落到 id 字段（与应用阶段一致）。
  */
 function lookupRef(
@@ -1311,20 +1351,20 @@ function assertRefResolvable(
   const name = String(refs.name ?? refs.id ?? '').trim();
   const display = name || id || '未指定';
   if (result.status === 'deleted') {
-    throw new AppError(404, `${label}: 引用的${noun}「${display}」已在本提案第 ${result.deletedAtIndex + 1} 项被删除`);
+    throw new AppError(404, `${label}: 引用的${noun}「${display}」已在本变更第 ${result.deletedAtIndex + 1} 项被删除`);
   }
   const forward = name ? overlay.forwardIndex(kind, name) : undefined;
   if (forward !== undefined) {
     throw new AppError(
       404,
-      `${label}: 引用的${noun}「${display}」在本提案第 ${forward + 1} 项才创建。` +
-        '同一提案内按变更顺序解析：请把创建调整到引用之前，或拆成多次提案',
+      `${label}: 引用的${noun}「${display}」在本变更第 ${forward + 1} 项才创建。` +
+        '同一变更内按变更顺序解析：请把创建调整到引用之前，或拆成多次变更',
     );
   }
-  throw new AppError(404, `${label}: 引用的${noun}「${display}」不存在（系统与本提案前序变更中均无）`);
+  throw new AppError(404, `${label}: 引用的${noun}「${display}」不存在（系统与本变更前序变更中均无）`);
 }
 
-/** create 类变更的名称查重：不能与系统已有对象同名（本提案内被删除的除外），也不能与前序创建重名。 */
+/** create 类变更的名称查重：不能与系统已有对象同名（本变更内被删除的除外），也不能与前序创建重名。 */
 function assertCreateNameAvailable(
   store: Store,
   overlay: ProposalOverlay,
@@ -1338,11 +1378,11 @@ function assertCreateNameAvailable(
   }
   const created = overlay.createdIndex(kind, name);
   if (created !== undefined) {
-    throw new AppError(409, `${label}: 与本提案第 ${created + 1} 项重复创建同名${noun}「${name}」`);
+    throw new AppError(409, `${label}: 与本变更第 ${created + 1} 项重复创建同名${noun}「${name}」`);
   }
 }
 
-/** 同一提案内「先创建、后删除」同一对象：矛盾提案，直接拒绝。 */
+/** 同一变更内「先创建、后删除」同一对象：矛盾变更，直接拒绝。 */
 function assertNotCreateThenDelete(
   hit: RefLookup,
   label: string,
@@ -1352,12 +1392,12 @@ function assertNotCreateThenDelete(
   if (hit.status === 'proposal') {
     throw new AppError(
       400,
-      `${label}: ${noun}「${display}」在本提案第 ${hit.createdAtIndex + 1} 项刚创建、本项又删除，属于矛盾的变更，请合并或去掉多余项`,
+      `${label}: ${noun}「${display}」在本变更第 ${hit.createdAtIndex + 1} 项刚创建、本项又删除，属于矛盾的变更，请合并或去掉多余项`,
     );
   }
 }
 
-/** 校验流水线节点的智能体引用：agentId 兼容名称，需在 store（未被本提案删除）或前序创建中可解析。 */
+/** 校验流水线节点的智能体引用：agentId 兼容名称，需在 store（未被本变更删除）或前序创建中可解析。 */
 function assertPipelineNodesResolvable(
   store: Store,
   overlay: ProposalOverlay,
@@ -1374,7 +1414,7 @@ function assertPipelineNodesResolvable(
   }
 }
 
-/** 校验智能体负载里的技能与自定义工具引用（兼容名称或 id，支持引用本提案前序创建的对象）。 */
+/** 校验智能体负载里的技能与自定义工具引用（兼容名称或 id，支持引用本变更前序创建的对象）。 */
 function assertAgentAssetRefs(
   store: Store,
   overlay: ProposalOverlay,
@@ -1394,9 +1434,9 @@ function assertAgentAssetRefs(
 }
 
 /**
- * 提案创建时的前置校验：按顺序模拟应用，支持「同一提案内先创建、后引用」。
- * - 引用在「store ∪ 提案覆盖层」中解析：可引用系统已有对象（未被本提案删除）或前序变更创建的对象；
- * - 同提案重名、先建后删、先删后引、后向引用都在这里拦截；
+ * 变更创建时的前置校验：按顺序模拟应用，支持「同一变更内先创建、后引用」。
+ * - 引用在「store ∪ 变更覆盖层」中解析：可引用系统已有对象（未被本变更删除）或前序变更创建的对象；
+ * - 同变更重名、先建后删、先删后引、后向引用都在这里拦截；
  * - 深度校验（图结构、在用对象的删除保护等）仍由应用时 store 执行。
  */
 function validateChangeOps(store: Store, changes: DesignerChangeOp[]): void {
@@ -1532,7 +1572,7 @@ export interface DesignerRuntimeOptions {
 /**
  * 流水线设计师的运行时：与任务型 Runtime 不同，它是「对话驱动」的——
  * 没有任务、环节与交接；用户消息进来后跑一个 ReAct 循环，以文本回复结束。
- * 对系统的全部修改只能经 propose_changes 提案、用户确认后由 applyChangeOp 执行。
+ * 对系统的全部修改只能经 apply_changes 变更、用户确认后由 applyChangeOp 执行。
  */
 export class DesignerRuntime {
   readonly store: Store;
@@ -1553,7 +1593,16 @@ export class DesignerRuntime {
   /** 确保设计师智能体与系统级工作目录存在；服务启动时调用。 */
   ensureReady(): Agent {
     this.store.ensureDesignerWorkspace();
-    return this.store.ensureDesignerAgent(DESIGNER_DEFAULT_DEFINITION);
+    const agent = this.store.ensureDesignerAgent(DESIGNER_DEFAULT_DEFINITION);
+    // 旧版「提案 + 界面确认」流程的默认档案会误导对话式新流程：逐字段原样匹配旧默认文案，
+    // 命中才刷新（人类改过的字段不动）。一次性迁移，新文案与旧默认不同后即不再触发。
+    const patch: Partial<AgentInput> = {};
+    if (agent.description === LEGACY_DESIGNER_DESCRIPTION) patch.description = DESIGNER_DEFAULT_DEFINITION.description;
+    if (agent.responsibilities === LEGACY_DESIGNER_RESPONSIBILITIES) {
+      patch.responsibilities = DESIGNER_DEFAULT_DEFINITION.responsibilities;
+    }
+    if (agent.guide === LEGACY_DESIGNER_GUIDE) patch.guide = DESIGNER_DEFAULT_DEFINITION.guide;
+    return Object.keys(patch).length > 0 ? this.store.updateAgent(agent.id, patch) : agent;
   }
 
   get busy(): boolean {
@@ -1707,52 +1756,7 @@ export class DesignerRuntime {
     return true;
   }
 
-  approveProposal(proposalId: string): DesignerProposal {
-    const proposal = this.store.getDesignerProposal(proposalId);
-    if (!proposal) throw new AppError(404, '提案不存在');
-    if (proposal.status !== 'pending') {
-      throw new AppError(409, `该提案已经处理过（${proposal.status}），不能重复确认`);
-    }
-    const applied: string[] = [];
-    try {
-      for (const [index, change] of proposal.changes.entries()) {
-        try {
-          applied.push(applyChangeOp(this.store, change));
-        } catch (error) {
-          const prefix = applied.length > 0 ? `前 ${applied.length} 项已生效：${applied.join('；')}。` : '';
-          throw new AppError(
-            error instanceof AppError ? error.status : 500,
-            `第 ${index + 1} 项变更失败：${errorMessage(error)}。${prefix}`,
-          );
-        }
-      }
-    } catch (error) {
-      const failed = this.store.updateDesignerProposal(proposal.id, {
-        status: 'failed',
-        error: errorMessage(error),
-      });
-      this.events.publish({ type: 'designer.proposal', sessionId: failed.sessionId, proposalId: failed.id });
-      this.events.publish({ type: 'config.updated' });
-      return failed;
-    }
-    const done = this.store.updateDesignerProposal(proposal.id, { status: 'applied' });
-    this.events.publish({ type: 'designer.proposal', sessionId: done.sessionId, proposalId: done.id });
-    this.events.publish({ type: 'config.updated' });
-    return done;
-  }
-
-  rejectProposal(proposalId: string): DesignerProposal {
-    const proposal = this.store.getDesignerProposal(proposalId);
-    if (!proposal) throw new AppError(404, '提案不存在');
-    if (proposal.status !== 'pending') {
-      throw new AppError(409, `该提案已经处理过（${proposal.status}），不能重复驳回`);
-    }
-    const rejected = this.store.updateDesignerProposal(proposal.id, { status: 'rejected' });
-    this.events.publish({ type: 'designer.proposal', sessionId: rejected.sessionId, proposalId: rejected.id });
-    return rejected;
-  }
-
-  /** 一键清空：中断回复并清空设计师的会话、消息、提案与工作目录（设计师智能体本身保留）。 */
+  /** 一键清空：中断回复并清空设计师的会话、消息、变更记录与工作目录（设计师智能体本身保留）。 */
   async resetAll(): Promise<void> {
     this.stop();
     if (this.busyEntry) {
@@ -1773,7 +1777,7 @@ export class DesignerRuntime {
   }
 
   /**
-   * 清空对话记录：删除当前会话——消息、全部提案（含待确认的）随外键级联删除，
+   * 清空对话记录：删除当前会话——消息、全部变更（含待确认的）随外键级联删除，
    * 该会话上传的附件一并清理；设计师工作目录里的文件与已应用的系统变更不受影响。
    * 清空后回到无会话状态，下一条消息自动创建全新会话。
    */

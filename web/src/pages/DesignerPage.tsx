@@ -4,7 +4,6 @@ import { Link } from 'react-router-dom';
 import {
   Bot,
   Brain,
-  Check,
   CircleAlert,
   DraftingCompass,
   Eraser,
@@ -67,14 +66,15 @@ function formatContextPercent(used: number, total: number): string {
 }
 
 /* ------------------------------------------------------------------ */
-/* 提案卡片                                                            */
+/* 变更卡片（对话式变更的执行留档，无需用户操作）                          */
 /* ------------------------------------------------------------------ */
 
 const PROPOSAL_STATUS_META: Record<DesignerProposalStatus, { label: string; tone: 'warning' | 'success' | 'neutral' | 'danger' }> = {
-  pending: { label: '待确认', tone: 'warning' },
-  applied: { label: '已应用', tone: 'success' },
-  rejected: { label: '已驳回', tone: 'neutral' },
-  failed: { label: '应用失败', tone: 'danger' },
+  // pending / rejected 是旧版「提案 + 界面确认」流程的遗留状态，只读展示。
+  pending: { label: '旧版待确认', tone: 'neutral' },
+  applied: { label: '已生效', tone: 'success' },
+  rejected: { label: '旧版已驳回', tone: 'neutral' },
+  failed: { label: '执行中断', tone: 'danger' },
 };
 
 function changeSummary(change: DesignerChangeOp): { kind: string; title: string; detail?: string } {
@@ -114,24 +114,14 @@ function changeSummary(change: DesignerChangeOp): { kind: string; title: string;
   }
 }
 
-function ProposalCard({
-  proposal,
-  busy,
-  onApprove,
-  onReject,
-}: {
-  proposal: DesignerProposal;
-  busy: boolean;
-  onApprove: () => void;
-  onReject: () => void;
-}) {
+function ProposalCard({ proposal }: { proposal: DesignerProposal }) {
   const meta = PROPOSAL_STATUS_META[proposal.status];
   return (
     <div className={cn('proposal-card', `proposal-card--${proposal.status}`)}>
       <div className="proposal-head">
         <FileCheck2 size={16} />
         <strong>{proposal.title}</strong>
-        <Badge tone={meta.tone} dot={proposal.status === 'pending'}>
+        <Badge tone={meta.tone} dot={proposal.status === 'failed'}>
           {meta.label}
         </Badge>
       </div>
@@ -162,18 +152,6 @@ function ProposalCard({
       ) : null}
       <div className="proposal-foot">
         <span className="muted">{formatDateTime(proposal.createdAt)}</span>
-        {proposal.status === 'pending' ? (
-          <div className="proposal-actions">
-            <button type="button" className="button button--primary button--sm" disabled={busy} onClick={onApprove}>
-              {busy ? <Spinner size={14} /> : <Check size={14} />}
-              确认应用
-            </button>
-            <button type="button" className="button button--ghost button--sm" disabled={busy} onClick={onReject}>
-              <X size={14} />
-              驳回
-            </button>
-          </div>
-        ) : null}
       </div>
     </div>
   );
@@ -269,7 +247,7 @@ const TOOL_ARG_FIELDS = [
   'status',
 ];
 
-/** 把一次工具调用的参数压成一行摘要（如 read 显示目标文件、propose_changes 显示提案标题）。 */
+/** 把一次工具调用的参数压成一行摘要（如 read 显示目标文件、apply_changes 显示变更标题）。 */
 function toolCallSummary(call: ToolCallView): string {
   let args: Record<string, unknown> = {};
   try {
@@ -329,18 +307,12 @@ function MessageItem({
   message,
   call,
   proposals,
-  busy,
-  onApprove,
-  onReject,
   onPreview,
 }: {
   message: DesignerMessage;
   /** 工具结果对应的调用（按 toolCallId 关联），用于展示调用参数。 */
   call?: ToolCallView;
   proposals: DesignerProposal[];
-  busy: boolean;
-  onApprove: (id: string) => void;
-  onReject: (id: string) => void;
   onPreview: (image: { url: string; name: string }) => void;
 }) {
   if (message.role === 'user') {
@@ -407,13 +379,7 @@ function MessageItem({
           </div>
         ) : null}
         {proposals.map((proposal) => (
-          <ProposalCard
-            key={proposal.id}
-            proposal={proposal}
-            busy={busy}
-            onApprove={() => onApprove(proposal.id)}
-            onReject={() => onReject(proposal.id)}
-          />
+          <ProposalCard key={proposal.id} proposal={proposal} />
         ))}
       </div>
     </div>
@@ -716,23 +682,6 @@ export function DesignerPage() {
     onError: (error: Error) => toast.error(error.message),
   });
 
-  const approveMutation = useMutation({
-    mutationFn: (id: string) => api.approveDesignerProposal(id),
-    onSuccess: (data) => {
-      invalidate(data.proposal.sessionId);
-      toast.success(
-        data.proposal.status === 'applied' ? '提案已应用' : '提案应用失败，详情见卡片',
-      );
-    },
-    onError: (error: Error) => toast.error(error.message),
-  });
-
-  const rejectMutation = useMutation({
-    mutationFn: (id: string) => api.rejectDesignerProposal(id),
-    onSuccess: (data) => invalidate(data.proposal.sessionId),
-    onError: (error: Error) => toast.error(error.message),
-  });
-
   const messages = detail?.messages ?? [];
   const proposals = detail?.proposals ?? [];
 
@@ -869,8 +818,6 @@ export function DesignerPage() {
     sendMutation.mutate({ id: activeId, content, attachments });
   };
 
-  const proposalBusy = approveMutation.isPending || rejectMutation.isPending;
-
   /* ---------------- 头部会话信息 ---------------- */
 
   const lastUsage: TokenUsage | null = useMemo(() => {
@@ -949,7 +896,7 @@ export function DesignerPage() {
                 {statusDetail || '正在思考…'}
               </span>
             ) : (
-              <span className="muted designer-chat-hint">讨论需求 → 提案 → 确认执行</span>
+              <span className="muted designer-chat-hint">提问澄清 → 设计思路 → 认可即执行</span>
             )}
             <div className="designer-actions">
               <button
@@ -965,7 +912,7 @@ export function DesignerPage() {
               <button
                 type="button"
                 className="button button--ghost button--sm designer-clear"
-                title="清空对话记录：删除全部消息、提案（含待确认的）与上传附件；工作目录文件与已生效变更保留"
+                title="清空对话记录：删除全部消息、变更记录与上传附件；工作目录文件与已生效变更保留"
                 disabled={!activeId || isBusyAnywhere || clearMutation.isPending}
                 onClick={() => setClearOpen(true)}
               >
@@ -997,7 +944,7 @@ export function DesignerPage() {
             <EmptyState
               icon={DraftingCompass}
               title="和设计师聊聊你想自动化的流程"
-              description="描述你想要的分工与交付，设计师会给出方案要点，并以提案卡片的形式提交变更，确认后才会生效。可以直接粘贴图片或拖入文件作为参考材料。"
+              description="描述你想要的分工与交付，设计师会先问清需求、讲明设计思路，你认可后它直接动手搭建，全程对话完成。可以直接粘贴图片或拖入文件作为参考材料。"
             />
           ) : (
             <>
@@ -1007,9 +954,6 @@ export function DesignerPage() {
                     message={message}
                     call={message.toolCallId ? toolCallById.get(message.toolCallId) : undefined}
                     proposals={proposalsByMessage.map.get(message.id) ?? []}
-                    busy={proposalBusy}
-                    onApprove={(id) => approveMutation.mutate(id)}
-                    onReject={(id) => rejectMutation.mutate(id)}
                     onPreview={setPreviewImage}
                   />
                   {compressedCount > 0 && index === compressedCount - 1 ? (
@@ -1021,13 +965,7 @@ export function DesignerPage() {
                 </Fragment>
               ))}
               {proposalsByMessage.orphans.map((proposal) => (
-                <ProposalCard
-                  key={proposal.id}
-                  proposal={proposal}
-                  busy={proposalBusy}
-                  onApprove={() => approveMutation.mutate(proposal.id)}
-                  onReject={() => rejectMutation.mutate(proposal.id)}
-                />
+                <ProposalCard key={proposal.id} proposal={proposal} />
               ))}
               {streamingText || streamingReasoning ? (
                 <StreamingMessage text={streamingText} reasoning={streamingReasoning} />
@@ -1181,7 +1119,7 @@ export function DesignerPage() {
       <ConfirmDialog
         open={clearOpen}
         title="清空对话记录？"
-        description="将删除全部消息、变更提案（含待确认的，确认前请先处理）与上传的附件；设计师工作目录里的文件与已应用的系统变更不受影响。清空后从全新会话开始。"
+        description="将删除全部消息、变更记录与上传的附件；设计师工作目录里的文件与已生效的系统变更不受影响。清空后从全新会话开始。"
         confirmLabel="清空"
         busy={clearMutation.isPending}
         onConfirm={() => clearMutation.mutate()}

@@ -21,8 +21,8 @@ const MIGRATIONS: SchemaMigration[] = [
   {
     // v10：设计师改为「永远只有一条会话」+ 支持摘要压缩上下文。
     // - 会话表新增压缩水位（compacted_seq）与前情提要（summary）两列；
-    // - 按需求确认：多会话存量数据（含消息、提案）一次性清空，从一条全新会话开始。
-    //   删除会话行即级联删除消息与提案（外键 ON DELETE CASCADE）；
+    // - 按需求确认：多会话存量数据（含消息、变更记录）一次性清空，从一条全新会话开始。
+    //   删除会话行即级联删除消息与变更记录（外键 ON DELETE CASCADE）；
     //   各会话遗留的上传附件目录由启动时的 purgeOrphanDesignerUploads 统一清理。
     to: 10,
     up: (db) => {
