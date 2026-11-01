@@ -304,6 +304,68 @@ describe('trainer agent', () => {
     expect(messages2.some((message) => (message.content ?? '').includes('已有未结束的任务'))).toBe(true);
   });
 
+  it('视野收窄：没有 list_agents；系统角色不可查；任务类工具只见测试任务', async () => {
+    let req = 0;
+    let foreignId = '';
+    let trainingId = '';
+    const { store, trainer, runtime } = createHarness(
+      byAgent({
+        智能体训练师: () => {
+          req += 1;
+          if (req === 1) {
+            return toolCall('start_test_task', { agent: '简报助手', task: '以「秋天」为主题产出一期简报' });
+          }
+          if (req === 2) return toolCall('list_tasks', {});
+          if (req === 3) return toolCall('get_task', { id: foreignId.slice(0, 8) });
+          if (req === 4) return toolCall('stop_test_task', { id: foreignId.slice(0, 8) });
+          return textReply('好的');
+        },
+        简报助手: () => toolCall('handoff', { folder: 'output' }, '简报完成'),
+        杂活员: () => toolCall('handoff', { folder: 'output' }, '杂活完成'),
+      }),
+    );
+
+    // 提示词与工具清单：没有系统级视野。
+    const profile = trainer.getProfile();
+    expect(profile.tools.some((tool) => tool.name === 'list_agents')).toBe(false);
+    for (const name of ['get_agent', 'apply_changes', 'start_test_task', 'stop_test_task', 'list_tasks', 'get_task']) {
+      expect(profile.tools.some((tool) => tool.name === name)).toBe(true);
+    }
+    expect(profile.systemPrompt).not.toContain('流水线');
+    expect(profile.systemPrompt).not.toContain('设计师');
+    expect(profile.systemPrompt).not.toContain('系统清单');
+
+    // 训练对象 + 一条外部流水线的任务（不属于训练师视野）。
+    const agent = store.createAgent({ name: '简报助手', responsibilities: '写简报' });
+    const foreignPipeline = store.createPipeline({
+      name: '其他流水线',
+      description: '',
+      nodes: [{ agentId: agent.id }],
+      edges: [],
+    });
+    const foreign = runtime.startTask({ pipelineId: foreignPipeline.id, task: '干点别的活' });
+    foreignId = foreign.id;
+    await waitFor(() => store.listTasks(200).find((task) => task.id === foreignId)?.status === 'waiting_human');
+    runtime.terminateTask(foreignId, '外部任务先终止');
+
+    trainer.createSession();
+    const session = store.listTrainerSessions()[0]!;
+    trainer.sendMessage(session.id, '开始训练');
+    await waitForIdle(trainer);
+
+    const toolMessages = store.listTrainerMessages(session.id).filter((message) => message.role === 'tool');
+    expect(toolMessages.length).toBe(4);
+    const trainingTask = store.listTasks(200).find((task) => task.pipelineName === '智能体训练台');
+    expect(trainingTask).toBeDefined();
+    trainingId = trainingTask!.id;
+    const listMessage = toolMessages[1]!.content;
+    expect(listMessage).toContain(trainingId.slice(0, 8));
+    expect(listMessage).toContain('共 1 条任务');
+    expect(listMessage).not.toContain(foreignId.slice(0, 8));
+    expect(toolMessages[2]!.content).toContain('找不到测试任务');
+    expect(toolMessages[3]!.content).toContain('找不到可终止的测试任务');
+  });
+
   it('stop_test_task 终止进行中的测试任务', async () => {
     let step = 0;
     const { store, trainer } = createHarness(

@@ -73,57 +73,17 @@ const TRAINER_DEFAULT_DEFINITION: AgentInput = {
 /* ------------------------------------------------------------------ */
 
 /**
- * 训练师的系统提示词：与设计师一样按会话实时生成——
- * 系统清单（智能体及其参与流水线、自定义工具、技能）+ 训练规则 + 系统级工作目录。
+ * 训练师的系统提示词：单智能体教练——没有系统级视野，不注入任何系统清单；
+ * 训练对象由用户指定，面对已有智能体用 get_agent 查看当前定义。
  */
 export function assembleTrainerSystemPrompt(store: Store, agent: Agent, workspaceDir: string): string {
-  const agents = store.listAgents().filter((item) => item.slug !== TRAINER_SLUG && item.slug !== DESIGNER_SLUG);
-  const pipelines = store.listPipelines();
-  const tools = store.listCustomTools();
-  const skills = store.listSkills();
-
-  const usageOf = (agentId: string): string[] =>
-    pipelines
-      .filter((pipeline) => pipeline.nodes.some((node) => node.agentId === agentId))
-      .map((pipeline) => pipeline.name);
-
-  const inventory: string[] = [];
-  if (agents.length === 0) {
-    inventory.push('- 智能体：还没有，系统里只有你和流水线设计师。');
-  } else {
-    inventory.push(`## 智能体（${agents.length}）`);
-    for (const item of agents) {
-      const usedIn = usageOf(item.id);
-      inventory.push(
-        `- ${item.name}：${item.description || '（无描述）'}` +
-          (usedIn.length > 0 ? `（参与流水线：${usedIn.join('、')}）` : '（未加入任何流水线）'),
-      );
-    }
-  }
-  if (tools.length === 0) {
-    inventory.push('- 自定义工具：还没有。');
-  } else {
-    inventory.push(`## 自定义工具（${tools.length}）`);
-    for (const tool of tools) {
-      inventory.push(`- ${tool.name}：${tool.description || '（无描述）'}`);
-    }
-  }
-  if (skills.length === 0) {
-    inventory.push('- 技能：还没有。');
-  } else {
-    inventory.push(`## 技能（${skills.length}）`);
-    for (const skill of skills) {
-      inventory.push(`- ${skill.name}：${skill.description || '（无描述）'}`);
-    }
-  }
-
   return [
-    `你是这个智能体流水线系统里的「智能体训练师」（${agent.name}）。`,
-    '系统里另有一位「流水线设计师」负责设计整套多智能体流水线；你只负责单个智能体的创建、训练与优化——把一个智能体从 0 调教到能稳定交付。',
+    `你是「智能体训练师」（${agent.name}），只专注于**一个**智能体：从 0 创建、持续训练，把它调教到能稳定交付、让用户满意。`,
+    '你的视野只有这一个智能体和它的测试任务——系统里其他部分（别的智能体、任务、配置）不在你的职责内；要训练谁、它现在什么样，由用户告诉你，面对已有的智能体先用 get_agent 查看它的当前定义。',
     '全程以对话完成：用户描述需求，你澄清、给思路、执行变更、启动测试、跟进结果、请用户评审，循环迭代。',
     '',
     '# 训练规则（必须遵守）',
-    '1. 【提示词从 0 写】你创建或重写智能体时，提示词完全从 0 撰写，不要参照系统里现有智能体的写法、格式或模板。',
+    '1. 【提示词从 0 写】你创建或重写智能体时，提示词完全从 0 撰写，不要沿用任何现成格式或模板。',
     '   写出的提示词必须明确说清三件事：',
     '   - 输入：这个智能体接收哪些输入（用户会给它什么、以什么形式）；',
     '   - 职责与工作目标：它要做什么、做到什么程度、用什么工作方法；',
@@ -136,11 +96,8 @@ export function assembleTrainerSystemPrompt(store: Store, agent: Agent, workspac
     '- 智能体的运行框架（专属工作目录、上下文管理、终点交付与验收）由系统统一处理，不要在提示词里交代这些机制，提示词只写角色本身的事情。',
     '- 同一批变更里可以先创建工具/技能、再创建引用它们的智能体；不要引用后序才创建的对象。',
     '',
-    '# 当前系统清单（实时注入，不含你与流水线设计师）',
-    ...inventory,
-    '',
     '# 测试任务',
-    `- start_test_task 会把系统测试流水线「${TRAINING_PIPELINE_NAME}」临时指向目标智能体并发起任务；同一时间系统只允许一个活动任务，若已有任务在跑，先请用户在任务页处理（验收完成或终止）再启动。`,
+    '- start_test_task 给目标智能体发起一轮测试任务；同一时间只允许一个活动任务，若已有任务在跑，先请用户在任务页处理（验收完成或终止）再启动。',
     '- 测试任务执行中用 list_tasks 跟踪状态；结束后用 get_task 查看完整运行记录（各环节输入输出、实际下发的系统提示词、消息记录）。',
     '- 任务停在「等待用户验收」表示智能体已交付终点产物：请用户到任务页查看交付物（final\\ 目录与输出说明），回来告诉你反馈，你再决定是否优化。',
     '- 你自己不能替用户验收或完成任务；修改与重测都要基于用户的反馈。',
@@ -164,17 +121,17 @@ export function assembleTrainerSystemPrompt(store: Store, agent: Agent, workspac
 const TRAINER_APPLY_CHANGES_DESCRIPTION =
   '应用一次训练变更（新建/修改/删除智能体、自定义工具、技能），按顺序立即执行、马上生效，用户无需再点任何确认按钮。' +
   '调用前提：调整思路已经向用户讲清并获认可；用户还没认可时不要调用。' +
-  'changes 每一项的结构见参数 schema（按 op 判别的 9 种变更，不包含流水线——流水线不是你的职责）。' +
+  'changes 每一项的结构见参数 schema（按 op 判别的 9 种变更，只涉及智能体、自定义工具与技能）。' +
   '引用已有对象一律用名称字段（agentName / toolName / skillName）；' +
   '同一变更内「先创建、后引用」按变更顺序解析，可以直接引用前序变更创建的对象，但不要引用后序才创建的对象、也不要先创建又删除同一对象。' +
-  '不能对智能体训练师与流水线设计师发起变更。' +
+  '不能对系统角色（包括你自己）发起变更。' +
   '部分失败时已成功的项保持生效，工具结果会说明失败原因与已生效清单。';
 
 const TRAINER_LIST_TASKS_DESCRIPTION =
-  '查看任务运行记录（按开始时间倒序）：任务描述、所属流水线、状态、进度与错误。用于跟踪你启动的测试任务的执行状态。';
+  '查看你启动的测试任务（按开始时间倒序）：任务内容、状态、进度与错误。用于跟踪测试任务的执行状态。';
 
 const TRAINER_GET_TASK_DESCRIPTION =
-  '查看一次测试任务的完整运行记录：环节链路（输入、输出、交接文件夹与错误）；给出 turn_id 可再细看该环节实际下发的系统提示词与完整消息记录。用于复盘测试、定位智能体的问题。';
+  '查看一次测试任务的完整运行记录：环节链路（输入、输出、交接文件夹与错误）；给出 turn_id 可再细看该环节实际下发的系统提示词与完整消息记录。只能查看训练师启动的测试任务。';
 
 const TRAINER_LIST_TASKS_PARAMS = {
   type: 'object',
@@ -208,6 +165,8 @@ interface TrainerToolDeps extends ChatToolDeps {
 /** metas 传入时同步登记每个工具的名称与描述，供详情展示复用，避免两处维护。 */
 function makeTrainerTools(deps: TrainerToolDeps, metas?: TrainerToolMeta[]): ResolvedTool[] {
   const { store } = deps;
+  // 训练师只看得见自己启动的测试任务：系统里其他任务（用户手工发起等）不在视野内。
+  const trainingTasks = () => store.listTasks(200).filter((task) => task.pipelineName === TRAINING_PIPELINE_NAME);
   const runtime = deps.runtime;
   const tools: ResolvedTool[] = [];
   const add = (
@@ -224,38 +183,8 @@ function makeTrainerTools(deps: TrainerToolDeps, metas?: TrainerToolMeta[]): Res
   };
 
   add(
-    'list_agents',
-    '查看当前所有智能体（不含你与流水线设计师）：名称、描述、模型覆盖、启用的自定义工具与技能、参与哪些流水线。训练前先看清单，避免重复建设。',
-    { type: 'object', properties: {} },
-    () => {
-      const pipelines = store.listPipelines();
-      const agents = store.listAgents().filter((item) => item.slug !== TRAINER_SLUG && item.slug !== DESIGNER_SLUG);
-      if (agents.length === 0) return '还没有智能体。用 apply_changes 的 create_agent 从 0 创建第一个。';
-      return [
-        `共 ${agents.length} 个智能体：`,
-        ...agents.map((item) => {
-          const usedIn = pipelines
-            .filter((pipeline) => pipeline.nodes.some((node) => node.agentId === item.id))
-            .map((pipeline) => pipeline.name);
-          const toolNames = (item.tools.custom ?? [])
-            .map((ref) => store.getCustomTool(ref)?.name ?? ref)
-            .filter(Boolean);
-          const skillNames = item.skillIds.map((ref) => store.getSkill(ref)?.name ?? ref).filter(Boolean);
-          return (
-            `- ${item.name}（id=${item.id.slice(0, 8)}）：${item.description || '（无描述）'}` +
-            `${item.model ? ` ｜ 模型：${item.model}` : ''}${item.temperature != null ? ` ｜ 温度：${item.temperature}` : ''}` +
-            `${toolNames.length > 0 ? ` ｜ 自定义工具：${toolNames.join('、')}` : ''}` +
-            `${skillNames.length > 0 ? ` ｜ 技能：${skillNames.join('、')}` : ''}` +
-            ` ｜ ${usedIn.length > 0 ? `参与流水线：${usedIn.join('、')}` : '未加入任何流水线'}`
-          );
-        }),
-      ].join('\n');
-    },
-  );
-
-  add(
     'get_agent',
-    '查看一个智能体的完整档案：提示词原文（任务说明/交付要求/工作指南）、模型与温度、工具与技能配置。修改前先看现状。',
+    '查看你正在训练的智能体的完整档案：提示词原文（输入/职责与工作目标/交付要求）、模型与温度、工具与技能配置。修改前先看现状；系统角色不可查看。',
     {
       type: 'object',
       properties: { name: { type: 'string', description: '智能体名称或 id' } },
@@ -265,9 +194,9 @@ function makeTrainerTools(deps: TrainerToolDeps, metas?: TrainerToolMeta[]): Res
       const ref = String(args.name ?? '').trim();
       if (!ref) throw new AppError(400, '缺少智能体名称');
       const agent = store.getAgent(ref) ?? store.getAgentByName(ref);
-      if (!agent) throw new AppError(404, `找不到智能体「${ref}」，可用 list_agents 查看清单`);
+      if (!agent) throw new AppError(404, `找不到智能体「${ref}」——确认名称是否正确，或用 apply_changes 的 create_agent 新建`);
       if (agent.slug === TRAINER_SLUG || agent.slug === DESIGNER_SLUG) {
-        throw new AppError(403, `「${agent.name}」是系统角色，不在训练范围内`);
+        throw new AppError(403, `「${agent.name}」是系统角色，不在训练范围`);
       }
       const toolNames = (agent.tools.custom ?? [])
         .map((toolRef) => store.getCustomTool(toolRef)?.name ?? toolRef)
@@ -317,7 +246,7 @@ function makeTrainerTools(deps: TrainerToolDeps, metas?: TrainerToolMeta[]): Res
         }
         const op = String((item as Record<string, unknown>).op ?? '');
         if (!ALLOWED_OPS.has(op)) {
-          throw new AppError(400, `changes[${index}].op「${op || '（空）'}」不在训练师的变更范围内（9 种，不含流水线）`);
+          throw new AppError(400, `changes[${index}].op「${op || '（空）'}」不在训练师的变更范围内（智能体/自定义工具/技能共 9 种）`);
         }
         return item as DesignerChangeOp;
       });
@@ -364,7 +293,7 @@ function makeTrainerTools(deps: TrainerToolDeps, metas?: TrainerToolMeta[]): Res
 
   add(
     'start_test_task',
-    `给指定智能体发起一轮测试任务：把系统测试流水线「${TRAINING_PIPELINE_NAME}」临时指向该智能体并立即启动。同一时间系统只允许一个活动任务。按训练规则，每次创建或修改智能体之后都要用它启动测试。`,
+    '给指定智能体发起一轮测试任务：系统会搭一个单环节测试任务并立即启动。同一时间只允许一个活动任务。按训练规则，每次创建或修改智能体之后都要用它启动测试。',
     {
       type: 'object',
       properties: {
@@ -379,7 +308,7 @@ function makeTrainerTools(deps: TrainerToolDeps, metas?: TrainerToolMeta[]): Res
     (args) => {
       const agentRef = requireString(args.agent, '智能体 agent', 200);
       const agent = store.getAgent(agentRef) ?? store.getAgentByName(agentRef);
-      if (!agent) throw new AppError(404, `找不到智能体「${agentRef}」，可用 list_agents 查看清单`);
+      if (!agent) throw new AppError(404, `找不到智能体「${agentRef}」——确认名称是否正确`);
       assertNotSystemAgent(agent);
       const taskText = requireString(args.task, '测试任务 task', 8000);
 
@@ -413,9 +342,9 @@ function makeTrainerTools(deps: TrainerToolDeps, metas?: TrainerToolMeta[]): Res
     (args) => {
       const idRef = optionalString(args.id, 40);
       const target = idRef
-        ? store.listTasks(200).find((task) => task.id.startsWith(idRef))
-        : store.findActiveTask();
-      if (!target) throw new AppError(404, `找不到任务「${idRef || '（当前活动任务）'}」`);
+        ? trainingTasks().find((task) => task.id.startsWith(idRef))
+        : trainingTasks().find((task) => task.status !== 'completed' && task.status !== 'failed' && task.status !== 'aborted');
+      if (!target) throw new AppError(404, `找不到可终止的测试任务「${idRef || '（当前活动测试任务）'}」`);
       const reason = optionalString(args.reason, 500) || '训练师终止了这轮测试';
       const detail = runtime.terminateTask(target.id, reason);
       return `任务 ${detail.id.slice(0, 8)} 已终止（状态：${detail.status}）。向用户说明原因，确认下一步：调整智能体后再测，或换个测试任务。`;
@@ -425,12 +354,11 @@ function makeTrainerTools(deps: TrainerToolDeps, metas?: TrainerToolMeta[]): Res
   add('list_tasks', TRAINER_LIST_TASKS_DESCRIPTION, TRAINER_LIST_TASKS_PARAMS, (args) => {
     const limit = Math.min(Math.max(Math.round(Number(args.limit ?? 20)) || 20, 1), 100);
     const status = optionalString(args.status, 30);
-    const items = store
-      .listTasks(200)
+    const items = trainingTasks()
       .filter((task) => !status || task.status === status)
       .slice(0, limit);
     if (items.length === 0) {
-      return `没有${status ? `「${status}」状态的` : ''}任务记录。用 start_test_task 启动一轮测试。`;
+      return `还没有测试任务记录。用 start_test_task 启动一轮测试。`;
     }
     return [
       `共 ${items.length} 条任务（新 → 旧）：`,
@@ -439,7 +367,7 @@ function makeTrainerTools(deps: TrainerToolDeps, metas?: TrainerToolMeta[]): Res
         const agent = task.currentAgentName ? ` ｜ 当前：${task.currentAgentName}` : '';
         const error = task.error ? `\n  ⚠️ ${truncateText(task.error, 300)}` : '';
         return (
-          `- [${task.id.slice(0, 8)}] ${task.createdAt.slice(0, 16).replace('T', ' ')} ｜ ${task.pipelineName || '（流水线已删除）'} ｜ ${task.status}${step}${agent} ｜ ${task.turnCount} 个环节\n` +
+          `- [${task.id.slice(0, 8)}] ${task.createdAt.slice(0, 16).replace('T', ' ')} ｜ ${task.status}${step}${agent} ｜ ${task.turnCount} 个环节\n` +
           `  任务：${truncateText(task.task.replace(/\s+/g, ' ').trim(), 300)}${error}`
         );
       }),
@@ -450,8 +378,8 @@ function makeTrainerTools(deps: TrainerToolDeps, metas?: TrainerToolMeta[]): Res
   add('get_task', TRAINER_GET_TASK_DESCRIPTION, TRAINER_GET_TASK_PARAMS, (args) => {
     const idRef = String(args.id ?? '').trim();
     if (!idRef) throw new AppError(400, '缺少任务 id');
-    const summary = store.listTasks(200).find((task) => task.id.startsWith(idRef));
-    if (!summary) throw new AppError(404, `找不到任务「${idRef}」，可用 list_tasks 查看任务列表`);
+    const summary = trainingTasks().find((task) => task.id.startsWith(idRef));
+    if (!summary) throw new AppError(404, `找不到测试任务「${idRef}」，可用 list_tasks 查看测试任务列表`);
     const task = store.getTaskDetail(summary.id);
     if (!task) throw new AppError(404, `找不到任务「${idRef}」`);
 
@@ -463,8 +391,8 @@ function makeTrainerTools(deps: TrainerToolDeps, metas?: TrainerToolMeta[]): Res
     const lines: string[] = [
       `# 任务 ${task.id.slice(0, 8)}（状态：${task.status}）`,
       `- 描述：${truncateText(task.task.replace(/\s+/g, ' ').trim(), 800)}`,
-      `- 流水线：${task.pipelineName}${flow ? ` ｜ ${flow}` : ''}`,
-      '- 说明：本任务使用启动时的流水线快照，之后对流水线或智能体的修改不影响这条记录。',
+      `- 环节链路：${flow}`,
+      '- 说明：本任务使用启动时的配置快照，之后对智能体的修改不影响这条记录。',
       ...(task.error ? [`- 任务级错误：${truncateText(task.error, 500)}`] : []),
       `- 环节（${task.turns.length} 个）：`,
     ];
@@ -531,7 +459,7 @@ export const TRAINER_CHANGE_ITEM_SCHEMA: Record<string, unknown> = {
   oneOf: [
     changeBranch('create_agent', '新建智能体（提示词完全从 0 撰写）', { agent: { type: 'object', description: '智能体的完整定义', properties: AGENT_FIELDS_PROPERTIES, required: ['name'] } }, ['agent']),
     changeBranch('update_agent', '修改智能体（只覆盖 agent 里给出的字段）', { ...REF_AGENT, agent: { type: 'object', description: '要覆盖的字段（结构同 create_agent 的 agent，均可选）' } }, ['agent']),
-    changeBranch('delete_agent', '删除智能体（被流水线引用中的智能体不能删）', { ...REF_AGENT }, []),
+    changeBranch('delete_agent', '删除智能体（仍被使用中时会被系统拒绝）', { ...REF_AGENT }, []),
     changeBranch('create_tool', '新建自定义工具', { tool: { type: 'object', description: '自定义工具的完整定义' }, }, ['tool']),
     changeBranch('update_tool', '修改自定义工具（只覆盖 tool 里给出的字段）', { ...REF_TOOL, tool: { type: 'object', description: '要覆盖的字段（结构同 create_tool 的 tool，均可选）' } }, ['tool']),
     changeBranch('delete_tool', '删除自定义工具', { ...REF_TOOL }, []),
