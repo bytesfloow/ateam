@@ -7296,6 +7296,13 @@ button.builtin-row:focus-visible {
     bottom: calc(74px + env(safe-area-inset-bottom, 0px));
   }
 
+  /* --- 任务页：引导区主按钮铺满整行 --- */
+
+  .hero-actions .button {
+    width: 100%;
+    justify-content: center;
+  }
+
   /* --- 设计师页：聊天头部换行、触屏提示收纳 --- */
 
   .designer-chat-head {
@@ -7313,12 +7320,56 @@ button.builtin-row:focus-visible {
     display: none;
   }
 
+  /* 头部工具区：信息徽标平分一行，操作按钮铺满下一行 */
+  .designer-head-tools {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 8px;
+  }
+
+  .designer-meta {
+    width: 100%;
+    gap: 6px;
+  }
+
+  .designer-meta .meta-pill {
+    flex: 1 1 auto;
+    justify-content: center;
+    max-width: none;
+    min-width: 0;
+  }
+
+  .designer-meta .meta-pill-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .designer-actions {
+    flex: 1 1 auto;
+    gap: 6px;
+  }
+
+  .designer-actions .button {
+    flex: 1;
+    justify-content: center;
+  }
+
+  /* 底部输入区：按钮靠右，发送按钮加宽便于触屏点按 */
+  .designer-input-actions {
+    justify-content: flex-end;
+  }
+
   .designer-input-actions .muted {
     display: none;
   }
 
-  /* --- 流水线编排：画布单栏，侧栏堆叠到下方 --- */
+  .designer-input-buttons .button--primary {
+    min-width: 116px;
+    justify-content: center;
+  }
 
+  /* --- 流水线编排：画布单栏，侧栏堆叠到下方 --- */
   .flow-editor {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -7340,5 +7391,19 @@ button.builtin-row:focus-visible {
   to {
     transform: translateY(0);
     opacity: 1;
+  }
+}
+
+/* 极窄屏（≤359px）：设计师头部操作按钮收窄，避免图标按钮掉行参差 */
+@media (max-width: 359px) {
+  .designer-actions .button {
+    padding: 0 8px;
+    gap: 5px;
+    font-size: 11.5px;
+  }
+
+  .designer-head-tools .icon-button {
+    width: 28px;
+    height: 28px;
   }
 }

@@ -941,11 +941,7 @@ export function DesignerPage() {
 
         <div className="designer-messages" ref={scrollRef} onScroll={handleMessagesScroll}>
           {!activeId || (messages.length === 0 && !streamingText && !streamingReasoning && !waitingReply) ? (
-            <EmptyState
-              icon={DraftingCompass}
-              title="和设计师聊聊你想自动化的流程"
-              description="描述你想要的分工与交付，设计师会先问清需求、讲明设计思路，你认可后它直接动手搭建，全程对话完成。可以直接粘贴图片或拖入文件作为参考材料。"
-            />
+            <EmptyState icon={DraftingCompass} title="和设计师聊聊你想自动化的流程" />
           ) : (
             <>
               {messages.map((message, index) => (
