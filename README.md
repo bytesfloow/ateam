@@ -121,6 +121,20 @@ pnpm start
 
 打开 **http://127.0.0.1:3310**。
 
+### 一键部署到云服务器
+仓库自带部署脚本（本地构建 → 打包上传 → systemd 守护 → 健康检查 → 公网验证）：
+
+```bash
+pip install paramiko          # 脚本依赖
+pnpm deploy:prod              # 全流程部署（默认目标 8.159.144.112:3002）
+pnpm deploy:prod:skip-build   # 服务器端已有产物时跳过本地构建
+```
+
+- 部署目录 `/opt/ateam`，专用系统用户 `ateam`，服务名 `ateam`（`systemctl restart ateam`）。
+- **重复部署不丢数据**：`data/`（SQLite）与 `workspaces/` 不在部署包内。
+- 凭据：环境变量 > `.secrets/aliyun.env`（已 gitignore，格式 `export CN_SSH_HOST/USER/PASS=...`）> 交互输入。
+- 目标可用环境变量覆盖：`ATEAM_DEPLOY_HOST / ATEAM_DEPLOY_USER / ATEAM_DEPLOY_DIR / ATEAM_DEPLOY_PORT`。
+
 ### 首次使用
 1. 在「设置 → 模型接入」填写 Base URL、模型名称与 API Key（默认指向 DeepSeek）。
 2. 在「智能体」创建至少两个角色，或点任务页的「一键加载示例流水线」；也可以直接在「设计师」页对话，让它以提案的方式帮你搭建（确认提案后生效）。

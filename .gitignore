@@ -9,3 +9,4 @@ workspaces/
 *.tsbuildinfo
 .DS_Store
 shots/
+.secrets/
