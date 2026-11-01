@@ -283,21 +283,8 @@ export function AgentsPage() {
                   {isDesigner ? <Badge tone="info">系统内置 · 设计师</Badge> : null}
                   {busy ? <Badge tone="accent" dot>运行中</Badge> : <Badge tone="success">空闲</Badge>}
                   {agent.model ? <Badge tone="accent">{agent.model}</Badge> : null}
-                </div>
-
-                <div className="agent-stats">
-                  <div>
-                    <span>自定义工具</span>
-                    <strong>{agent.tools.custom.length}</strong>
-                  </div>
-                  <div>
-                    <span>技能</span>
-                    <strong>{agent.skillIds.length}</strong>
-                  </div>
-                  <div>
-                    <span>最大轮次</span>
-                    <strong>{agent.maxIterations > 0 ? agent.maxIterations : '不限制'}</strong>
-                  </div>
+                  <Badge>工具 {agent.tools.builtin.length + agent.tools.custom.length}</Badge>
+                  <Badge>技能 {agent.skillIds.length}</Badge>
                 </div>
 
                 <button type="button" className="agent-card-open" onClick={() => openEdit(agent)}>

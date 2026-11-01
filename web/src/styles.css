@@ -3514,35 +3514,6 @@ pre {
   flex-wrap: wrap;
 }
 
-.agent-stats {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 1px;
-  border: 1px solid var(--border-soft);
-  border-radius: 9px;
-  background: var(--border-soft);
-  overflow: hidden;
-}
-
-.agent-stats > div {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 8px 9px;
-  background: #ffffff;
-}
-
-.agent-stats span {
-  font-size: 9.5px;
-  color: var(--muted);
-}
-
-.agent-stats strong {
-  font-size: 14px;
-  font-weight: 650;
-  color: var(--text);
-}
-
 .agent-card-open {
   display: flex;
   align-items: center;
@@ -5277,10 +5248,6 @@ button.builtin-row:focus-visible {
 
   .run-detail-side {
     grid-template-columns: 1fr;
-  }
-
-  .agent-stats {
-    grid-template-columns: repeat(2, 1fr);
   }
 
   .stage-summary {
