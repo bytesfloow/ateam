@@ -1,4 +1,5 @@
 import { cn } from '../lib/format';
+import { InfoHint } from './Field';
 
 interface ToggleProps {
   checked: boolean;
@@ -41,8 +42,10 @@ export function ToggleRow({
   return (
     <div className={cn('toggle-row', disabled && 'is-disabled')}>
       <div>
-        <div className="toggle-title">{title}</div>
-        {description ? <div className="toggle-description">{description}</div> : null}
+        <div className="toggle-title-row">
+          <span className="toggle-title">{title}</span>
+          {description ? <InfoHint>{description}</InfoHint> : null}
+        </div>
       </div>
       <Toggle checked={checked} onChange={onChange} disabled={disabled} label={title} />
     </div>
