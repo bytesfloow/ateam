@@ -4,6 +4,7 @@ import express from 'express';
 import { DB_PATH, ensureBaseDirs, HOST, PORT, VERSION, WEB_DIST, WORKSPACE_ROOT } from './config';
 import { openDatabase } from './db';
 import { DesignerRuntime } from './designer';
+import { TrainerRuntime } from './trainer';
 import { RuntimeEvents } from './events';
 import { apiErrorHandler } from './http';
 import { Runtime } from './runtime';
@@ -18,12 +19,14 @@ const events = new RuntimeEvents();
 const runtime = new Runtime({ store, events });
 const designer = new DesignerRuntime({ store, events });
 designer.ensureReady();
+const trainer = new TrainerRuntime({ store, events, taskRuntime: runtime });
+trainer.ensureReady();
 
 const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '8mb' }));
 
-app.use('/api', createApiRouter({ store, runtime, designer }));
+app.use('/api', createApiRouter({ store, runtime, designer, trainer }));
 
 const indexHtml = path.join(WEB_DIST, 'index.html');
 if (fs.existsSync(indexHtml)) {

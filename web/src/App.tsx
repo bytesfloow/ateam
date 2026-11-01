@@ -8,6 +8,7 @@ import { PipelinesPage } from './pages/PipelinesPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { SkillsPage } from './pages/SkillsPage';
 import { TaskDetailPage } from './pages/TaskDetailPage';
+import { TrainerPage } from './pages/TrainerPage';
 import { TasksPage } from './pages/TasksPage';
 import { ToolsPage } from './pages/ToolsPage';
 
@@ -18,6 +19,7 @@ export function App() {
         <Route index element={<TasksPage />} />
         <Route path="tasks/:taskId" element={<TaskDetailPage />} />
         <Route path="designer" element={<DesignerPage />} />
+        <Route path="trainer" element={<TrainerPage />} />
         <Route path="pipelines" element={<PipelinesPage />} />
         <Route path="pipelines/new" element={<PipelineEditorPage />} />
         <Route path="pipelines/:pipelineId/edit" element={<PipelineEditorPage />} />

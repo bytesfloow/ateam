@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 /**
  * 首个支持增量迁移的版本。低于该版本的旧库（探索期的历史 schema）仍走「清空重建」：
@@ -40,6 +40,12 @@ const MIGRATIONS: SchemaMigration[] = [
     up: (db) => {
       db.exec('ALTER TABLE agents DROP COLUMN max_iterations;');
     },
+  },
+  {
+    // v12：新增智能体训练师（trainer）。三张表结构与 designer_* 完全一致，
+    // 由 SCHEMA 的 IF NOT EXISTS 统一补齐，这里仅占位推进版本号。
+    to: 12,
+    up: () => {},
   },
 ];
 
@@ -232,6 +238,45 @@ CREATE TABLE IF NOT EXISTS designer_proposals (
   decided_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_designer_proposals_session ON designer_proposals(session_id, created_at);
+
+/* trainer（智能体训练师）：结构与 designer_* 完全一致 */
+CREATE TABLE IF NOT EXISTS trainer_sessions (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL DEFAULT '新对话',
+  compacted_seq INTEGER NOT NULL DEFAULT 0,
+  summary TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS trainer_messages (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES trainer_sessions(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
+  tool_calls TEXT,
+  tool_call_id TEXT,
+  name TEXT,
+  meta TEXT NOT NULL DEFAULT '{}',
+  images TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trainer_messages_seq ON trainer_messages(session_id, seq);
+
+CREATE TABLE IF NOT EXISTS trainer_proposals (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES trainer_sessions(id) ON DELETE CASCADE,
+  message_id TEXT,
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  changes TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  error TEXT,
+  created_at TEXT NOT NULL,
+  decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_trainer_proposals_session ON trainer_proposals(session_id, created_at);
 `;
 
 /**

@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import type { RealtimeEvent } from '@shared/types';
 import { clearActivity, pruneActivities, recordActivity } from '../lib/activity';
 import { clearDesignerStream, recordDesignerStatusEvent, recordDesignerStreamEvent } from '../lib/designerStream';
+import { clearTrainerStream, recordTrainerStatusEvent, recordTrainerStreamEvent } from '../lib/trainerStream';
 import { useToast } from '../lib/toast';
 
 export function useRealtime(): boolean {
@@ -57,6 +58,7 @@ export function useRealtime(): boolean {
         case 'settings.updated':
           void queryClient.invalidateQueries({ queryKey: ['settings'] });
           void queryClient.invalidateQueries({ queryKey: ['designer-profile'] });
+          void queryClient.invalidateQueries({ queryKey: ['trainer-profile'] });
           void queryClient.invalidateQueries({ queryKey: ['status'] });
           break;
         case 'config.updated':
@@ -68,6 +70,8 @@ export function useRealtime(): boolean {
           void queryClient.invalidateQueries({ queryKey: ['status'] });
           void queryClient.invalidateQueries({ queryKey: ['designer-session'] });
           void queryClient.invalidateQueries({ queryKey: ['designer-profile'] });
+          void queryClient.invalidateQueries({ queryKey: ['trainer-session'] });
+          void queryClient.invalidateQueries({ queryKey: ['trainer-profile'] });
           break;
         case 'designer.session':
           void queryClient.invalidateQueries({ queryKey: ['designer-sessions'] });
@@ -89,6 +93,28 @@ export function useRealtime(): boolean {
           recordDesignerStatusEvent(event);
           if (event.detail === 'idle') clearDesignerStream(event.sessionId);
           void queryClient.invalidateQueries({ queryKey: ['designer-sessions'] });
+          void queryClient.invalidateQueries({ queryKey: ['status'] });
+          break;
+        case 'trainer.session':
+          void queryClient.invalidateQueries({ queryKey: ['trainer-sessions'] });
+          break;
+        case 'trainer.message':
+          clearTrainerStream(event.sessionId);
+          void queryClient.invalidateQueries({ queryKey: ['trainer-sessions'] });
+          void queryClient.invalidateQueries({ queryKey: ['trainer-session', event.sessionId] });
+          break;
+        case 'trainer.delta':
+        case 'trainer.reasoning':
+          recordTrainerStreamEvent(event);
+          break;
+        case 'trainer.proposal':
+          void queryClient.invalidateQueries({ queryKey: ['trainer-sessions'] });
+          void queryClient.invalidateQueries({ queryKey: ['trainer-session', event.sessionId] });
+          break;
+        case 'trainer.status':
+          recordTrainerStatusEvent(event);
+          if (event.detail === 'idle') clearTrainerStream(event.sessionId);
+          void queryClient.invalidateQueries({ queryKey: ['trainer-sessions'] });
           void queryClient.invalidateQueries({ queryKey: ['status'] });
           break;
         case 'reset':

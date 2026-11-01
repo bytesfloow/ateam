@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { createAgentsRouter } from './agents';
 import type { ApiDeps } from './deps';
 import { createDesignerRouter } from './designer';
+import { createTrainerRouter } from './trainer';
 import { createFeedbackRouter } from './feedback';
 import { createSkillsRouter, createToolsRouter } from './library';
 import { createPipelinesRouter } from './pipelines';
@@ -20,6 +21,7 @@ export function createApiRouter(deps: ApiDeps): Router {
   router.use('/feedback', createFeedbackRouter(deps));
   router.use('/settings', createSettingsRouter(deps));
   router.use('/designer', createDesignerRouter(deps));
+  router.use('/trainer', createTrainerRouter(deps));
   router.use((_req, res) => {
     res.status(404).json({ error: '接口不存在' });
   });

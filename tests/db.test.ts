@@ -27,7 +27,7 @@ describe('database schema', () => {
   it('creates the pipeline schema on a fresh database', () => {
     const db = openDatabase(':memory:');
     try {
-      expect(userVersion(db)).toBe(11);
+      expect(userVersion(db)).toBe(12);
       expect(tableNamesOf(db)).toEqual(
         expect.arrayContaining([
           'settings',
@@ -148,7 +148,7 @@ describe('database schema', () => {
 
     const db = openDatabase(file);
     try {
-      expect(userVersion(db)).toBe(11);
+      expect(userVersion(db)).toBe(12);
       expect(tableNamesOf(db)).toContain('pipelines');
 
       // 业务数据（智能体、流水线、任务、回合等）全部清空，schema 重建。

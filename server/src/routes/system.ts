@@ -8,7 +8,7 @@ import type { ApiDeps } from './deps';
 const resetSchema = z.object({ confirm: z.literal(true) });
 
 export function createSystemRouter(deps: ApiDeps): Router {
-  const { store, runtime, designer } = deps;
+  const { store, runtime, designer, trainer } = deps;
   const router = Router();
 
   router.get('/health', (_req, res) => {
@@ -21,7 +21,7 @@ export function createSystemRouter(deps: ApiDeps): Router {
 
   router.get('/status', (_req, res) => {
     res.json({
-      status: { ...runtime.getStatus(), designerBusy: designer.busy },
+      status: { ...runtime.getStatus(), designerBusy: designer.busy, trainerBusy: trainer.busy },
       stats: store.getStats(),
     });
   });
@@ -70,6 +70,7 @@ export function createSystemRouter(deps: ApiDeps): Router {
       parseBody(req, resetSchema);
       const result = await runtime.resetAll();
       await designer.resetAll();
+      await trainer.resetAll();
       res.json({ result });
     }),
   );

@@ -6,6 +6,7 @@ import {
   BUILTIN_TOOL_NAMES,
   DESIGNER_SLUG,
   DESIGNER_WORKSPACE_LIST_MAX,
+  TRAINER_SLUG,
   type Agent,
   type AgentInput,
   type AgentSummary,
@@ -69,6 +70,51 @@ import {
 import { normalizeSearchBaseUrl } from './web-tools';
 
 type Row = Record<string, unknown>;
+
+/** 对话角色种类：流水线设计师与智能体训练师共用同一套对话设施。 */
+export type ChatRoleKind = 'designer' | 'trainer';
+
+interface ChatRoleTables {
+  /** 界面文案里的角色名。 */
+  label: string;
+  /** 工作目录名（workspaceRoot 下的一级目录）。 */
+  workspaceDirName: string;
+  /** 固定 slug（agents 表识别系统角色用）。 */
+  slug: string;
+  sessions: string;
+  messages: string;
+  proposals: string;
+}
+
+const CHAT_ROLES: Record<ChatRoleKind, ChatRoleTables> = {
+  designer: {
+    label: '设计师',
+    workspaceDirName: 'designer',
+    slug: DESIGNER_SLUG,
+    sessions: 'designer_sessions',
+    messages: 'designer_messages',
+    proposals: 'designer_proposals',
+  },
+  trainer: {
+    label: '训练师',
+    workspaceDirName: 'trainer',
+    slug: TRAINER_SLUG,
+    sessions: 'trainer_sessions',
+    messages: 'trainer_messages',
+    proposals: 'trainer_proposals',
+  },
+};
+
+/** 对话角色一条消息的落库输入。 */
+export interface ChatMessageInput {
+  role: DesignerMessage['role'];
+  content: string;
+  toolCalls?: ToolCallView[];
+  toolCallId?: string | null;
+  name?: string | null;
+  images?: AttachedImage[];
+  meta?: MessageMeta;
+}
 
 /** 单个提示词字段的长度上限。 */
 export const PROMPT_FIELD_MAX = 20_000;
@@ -1948,32 +1994,38 @@ export class Store {
   }
 
   /* ---------------------------------------------------------------- */
-  /* designer（流水线设计师）                                            */
+  /* ---------------------------------------------------------------- */
+  /* chat roles（设计师 / 训练师共用的对话角色设施）                        */
   /* ---------------------------------------------------------------- */
 
-  /** 设计师的系统级专属工作目录：跨会话持久，不属于任何任务。 */
-  designerWorkspaceDir(): string {
-    const dir = path.join(this.workspaceRoot, 'designer');
-    assert(path.resolve(dir).startsWith(path.resolve(this.workspaceRoot)), 500, '设计师工作目录路径越界');
+  /** 会话角色的物理设施映射：工作目录名、固定 slug 与三张表名。 */
+  private chatTables(kind: ChatRoleKind): ChatRoleTables {
+    return CHAT_ROLES[kind];
+  }
+
+  /** 角色的系统级专属工作目录：跨会话持久，不属于任何任务。 */
+  chatWorkspaceDir(kind: ChatRoleKind): string {
+    const dir = path.join(this.workspaceRoot, CHAT_ROLES[kind].workspaceDirName);
+    assert(path.resolve(dir).startsWith(path.resolve(this.workspaceRoot)), 500, `${CHAT_ROLES[kind].label}工作目录路径越界`);
     return dir;
   }
 
-  ensureDesignerWorkspace(): string {
-    const dir = this.designerWorkspaceDir();
+  chatEnsureWorkspace(kind: ChatRoleKind): string {
+    const dir = this.chatWorkspaceDir(kind);
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   }
 
   /**
-   * 校验并解析设计师工作目录内的相对路径（'' 表示根目录）。
+   * 校验并解析角色工作目录内的相对路径（'' 表示根目录）。
    * 拒绝绝对路径、反斜杠与 `..` 上跳；解析后仍必须落在工作目录内，否则抛 400。
    */
-  resolveDesignerWorkspacePath(relPath: string): string {
+  chatResolveWorkspacePath(kind: ChatRoleKind, relPath: string): string {
     const normalized = path.posix.normalize(String(relPath ?? '').replace(/\\/g, '/').trim());
     if (normalized.startsWith('/') || normalized.split('/').includes('..')) {
       throw new AppError(400, `路径不合法：${relPath}`);
     }
-    const workspace = path.resolve(this.designerWorkspaceDir());
+    const workspace = path.resolve(this.chatWorkspaceDir(kind));
     const parts = normalized === '' || normalized === '.' ? [] : normalized.split('/');
     const target = path.resolve(workspace, ...parts);
     if (target !== workspace && !target.startsWith(workspace + path.sep)) {
@@ -1983,12 +2035,12 @@ export class Store {
   }
 
   /**
-   * 列出设计师工作目录某一层的内容（文件夹在前、同类按名称排序）。
+   * 列出角色工作目录某一层的内容（文件夹在前、同类按名称排序）。
    * 符号链接一律跳过；超过单层上限时丢弃多余条目并标记 truncated。
    */
-  listDesignerWorkspace(relPath: string): DesignerWorkspaceListing {
-    const workspace = path.resolve(this.designerWorkspaceDir());
-    const target = this.resolveDesignerWorkspacePath(relPath);
+  chatListWorkspace(kind: ChatRoleKind, relPath: string): DesignerWorkspaceListing {
+    const workspace = path.resolve(this.chatWorkspaceDir(kind));
+    const target = this.chatResolveWorkspacePath(kind, relPath);
     let dirents: fs.Dirent[];
     try {
       dirents = fs.readdirSync(target, { withFileTypes: true });
@@ -2032,23 +2084,23 @@ export class Store {
     };
   }
 
-  getDesignerAgent(): Agent | null {
-    const row = this.db.prepare('SELECT * FROM agents WHERE slug = ?').get(DESIGNER_SLUG) as Row | undefined;
+  chatGetAgent(kind: ChatRoleKind): Agent | null {
+    const row = this.db.prepare('SELECT * FROM agents WHERE slug = ?').get(CHAT_ROLES[kind].slug) as Row | undefined;
     return row ? this.mapAgent(row) : null;
   }
 
-  /** 确保设计师智能体存在（slug 固定）；已存在时不覆盖——它的定义由人类维护。 */
-  ensureDesignerAgent(definition: AgentInput): Agent {
-    const existing = this.getDesignerAgent();
+  /** 确保角色智能体存在（slug 固定）；已存在时不覆盖——它的定义由人类维护。 */
+  chatEnsureAgent(kind: ChatRoleKind, definition: AgentInput): Agent {
+    const existing = this.chatGetAgent(kind);
     if (existing) return existing;
     // 极端情况：用户此前手动建过同名智能体。换个名字兜底，绝不让系统启动失败。
     let name = definition.name;
     for (let attempt = 0; ; attempt += 1) {
       try {
         const created = this.createAgent({ ...definition, name });
-        // createAgent 生成随机 slug；这里把 slug 固定为 designer 作为系统标识。
-        this.db.prepare('UPDATE agents SET slug = ? WHERE id = ?').run(DESIGNER_SLUG, created.id);
-        return this.getDesignerAgent()!;
+        // createAgent 生成随机 slug；这里把 slug 固定为角色标识。
+        this.db.prepare('UPDATE agents SET slug = ? WHERE id = ?').run(CHAT_ROLES[kind].slug, created.id);
+        return this.getAgent(created.id)!;
       } catch (error) {
         if (attempt === 0 && error instanceof AppError && error.status === 409) {
           name = `${definition.name}（系统）`;
@@ -2059,7 +2111,9 @@ export class Store {
     }
   }
 
-  mapDesignerSession(row: Row): DesignerSession {
+  /* ---------------- sessions ---------------- */
+
+  private chatMapSession(row: Row): DesignerSession {
     return {
       id: asString(row.id),
       title: asString(row.title) || '新对话',
@@ -2070,19 +2124,20 @@ export class Store {
     };
   }
 
-  listDesignerSessions(): DesignerSessionSummary[] {
+  chatListSessions(kind: ChatRoleKind): DesignerSessionSummary[] {
+    const tables = this.chatTables(kind);
     const rows = this.db
       .prepare(
         `SELECT s.*,
-           (SELECT COUNT(*) FROM designer_messages m WHERE m.session_id = s.id) AS message_count
-         FROM designer_sessions s
+           (SELECT COUNT(*) FROM ${tables.messages} m WHERE m.session_id = s.id) AS message_count
+         FROM ${tables.sessions} s
          ORDER BY s.updated_at DESC`,
       )
       .all() as Row[];
     const lastRows = this.db
       .prepare(
-        `SELECT m.session_id, m.role, m.content FROM designer_messages m
-         WHERE m.seq IN (SELECT MAX(seq) FROM designer_messages GROUP BY session_id)`,
+        `SELECT m.session_id, m.role, m.content FROM ${tables.messages} m
+         WHERE m.seq IN (SELECT MAX(seq) FROM ${tables.messages} GROUP BY session_id)`,
       )
       .all() as Row[];
     const lastBySession = new Map(lastRows.map((row) => [asString(row.session_id), row]));
@@ -2096,61 +2151,69 @@ export class Store {
             : '（工具调用）'
           : content;
       return {
-        ...this.mapDesignerSession(row),
+        ...this.chatMapSession(row),
         messageCount: asNumber(row.message_count),
         lastMessagePreview: preview ? truncateDesignerPreview(preview) : '（空对话）',
       };
     });
   }
 
-  getDesignerSession(id: string): DesignerSession | null {
-    const row = this.db.prepare('SELECT * FROM designer_sessions WHERE id = ?').get(id) as Row | undefined;
-    return row ? this.mapDesignerSession(row) : null;
+  chatGetSession(kind: ChatRoleKind, id: string): DesignerSession | null {
+    const row = this.db
+      .prepare(`SELECT * FROM ${this.chatTables(kind).sessions} WHERE id = ?`)
+      .get(id) as Row | undefined;
+    return row ? this.chatMapSession(row) : null;
   }
 
-  createDesignerSession(title?: string): DesignerSession {
+  chatCreateSession(kind: ChatRoleKind, title?: string): DesignerSession {
     const id = randomUUID();
     const timestamp = now();
     this.db
-      .prepare('INSERT INTO designer_sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)')
+      .prepare(`INSERT INTO ${this.chatTables(kind).sessions} (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`)
       .run(id, (title ?? '').trim().slice(0, 60) || '新对话', timestamp, timestamp);
-    return this.getDesignerSession(id)!;
+    return this.chatGetSession(kind, id)!;
   }
 
   /** 首条用户消息写入后，用消息前缀做会话标题。 */
-  renameDesignerSessionFromMessage(id: string, message: string): void {
+  chatRenameSessionFromMessage(kind: ChatRoleKind, id: string, message: string): void {
     const title = message.replace(/\s+/g, ' ').trim().slice(0, 30);
     if (!title) return;
     this.db
-      .prepare("UPDATE designer_sessions SET title = ?, updated_at = ? WHERE id = ? AND title = '新对话'")
+      .prepare(
+        `UPDATE ${this.chatTables(kind).sessions} SET title = ?, updated_at = ? WHERE id = ? AND title = '新对话'`,
+      )
       .run(title, now(), id);
   }
 
-  touchDesignerSession(id: string): void {
-    this.db.prepare('UPDATE designer_sessions SET updated_at = ? WHERE id = ?').run(now(), id);
+  chatTouchSession(kind: ChatRoleKind, id: string): void {
+    this.db.prepare(`UPDATE ${this.chatTables(kind).sessions} SET updated_at = ? WHERE id = ?`).run(now(), id);
   }
 
   /**
    * 落库一次「摘要压缩」结果：seq ≤ compactedSeq 的较早消息此后不再进入模型请求，
    * 由 summary（前情提要）替代（注入系统提示词）。界面历史不受影响。
    */
-  compactDesignerSession(id: string, patch: { compactedSeq: number; summary: string }): DesignerSession {
-    const session = this.getDesignerSession(id);
+  chatCompactSession(kind: ChatRoleKind, id: string, patch: { compactedSeq: number; summary: string }): DesignerSession {
+    const session = this.chatGetSession(kind, id);
     assert(session, 404, '会话不存在');
     this.db
-      .prepare('UPDATE designer_sessions SET compacted_seq = ?, summary = ?, updated_at = ? WHERE id = ?')
+      .prepare(
+        `UPDATE ${this.chatTables(kind).sessions} SET compacted_seq = ?, summary = ?, updated_at = ? WHERE id = ?`,
+      )
       .run(Math.max(0, Math.round(patch.compactedSeq)), patch.summary, now(), id);
-    return this.getDesignerSession(id)!;
+    return this.chatGetSession(kind, id)!;
   }
 
-  deleteDesignerSession(id: string): DesignerSession {
-    const session = this.getDesignerSession(id);
+  chatDeleteSession(kind: ChatRoleKind, id: string): DesignerSession {
+    const session = this.chatGetSession(kind, id);
     assert(session, 404, '会话不存在');
-    this.db.prepare('DELETE FROM designer_sessions WHERE id = ?').run(id);
+    this.db.prepare(`DELETE FROM ${this.chatTables(kind).sessions} WHERE id = ?`).run(id);
     return session;
   }
 
-  mapDesignerMessage(row: Row): DesignerMessage {
+  /* ---------------- messages ---------------- */
+
+  private chatMapMessage(row: Row): DesignerMessage {
     return {
       id: asString(row.id),
       sessionId: asString(row.session_id),
@@ -2166,10 +2229,11 @@ export class Store {
     };
   }
 
-  appendDesignerMessage(sessionId: string, input: MessageInput): DesignerMessage {
+  chatAppendMessage(kind: ChatRoleKind, sessionId: string, input: MessageInput): DesignerMessage {
     return this.tx(() => {
+      const tables = this.chatTables(kind);
       const row = this.db
-        .prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM designer_messages WHERE session_id = ?')
+        .prepare(`SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM ${tables.messages} WHERE session_id = ?`)
         .get(sessionId) as Row;
       const seq = asNumber(row.next);
       const id = randomUUID();
@@ -2177,7 +2241,7 @@ export class Store {
       const images = input.images ?? [];
       this.db
         .prepare(
-          `INSERT INTO designer_messages (id, session_id, seq, role, content, tool_calls, tool_call_id, name, meta, images, created_at)
+          `INSERT INTO ${tables.messages} (id, session_id, seq, role, content, tool_calls, tool_call_id, name, meta, images, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
@@ -2193,7 +2257,7 @@ export class Store {
           images.length > 0 ? JSON.stringify(images) : null,
           createdAt,
         );
-      this.touchDesignerSession(sessionId);
+      this.chatTouchSession(kind, sessionId);
       return {
         id,
         sessionId,
@@ -2210,14 +2274,16 @@ export class Store {
     });
   }
 
-  listDesignerMessages(sessionId: string): DesignerMessage[] {
+  chatListMessages(kind: ChatRoleKind, sessionId: string): DesignerMessage[] {
     const rows = this.db
-      .prepare('SELECT * FROM designer_messages WHERE session_id = ? ORDER BY seq ASC')
+      .prepare(`SELECT * FROM ${this.chatTables(kind).messages} WHERE session_id = ? ORDER BY seq ASC`)
       .all(sessionId) as Row[];
-    return rows.map((row) => this.mapDesignerMessage(row));
+    return rows.map((row) => this.chatMapMessage(row));
   }
 
-  mapDesignerProposal(row: Row): DesignerProposal {
+  /* ---------------- proposals（变更留档） ---------------- */
+
+  private chatMapProposal(row: Row): DesignerProposal {
     return {
       id: asString(row.id),
       sessionId: asString(row.session_id),
@@ -2236,20 +2302,23 @@ export class Store {
    * 落一条变更记录（对话式变更直接执行后的留档）：status 为 applied / failed，
    * failed 时携带 error（说明第几项失败与已生效清单）。decided_at 即执行完成时间。
    */
-  createDesignerProposal(input: {
-    sessionId: string;
-    messageId: string | null;
-    title: string;
-    summary: string;
-    changes: DesignerChangeOp[];
-    status: 'applied' | 'failed';
-    error?: string;
-  }): DesignerProposal {
+  chatCreateProposal(
+    kind: ChatRoleKind,
+    input: {
+      sessionId: string;
+      messageId: string | null;
+      title: string;
+      summary: string;
+      changes: DesignerChangeOp[];
+      status: 'applied' | 'failed';
+      error?: string;
+    },
+  ): DesignerProposal {
     const id = randomUUID();
     const timestamp = now();
     this.db
       .prepare(
-        `INSERT INTO designer_proposals (id, session_id, message_id, title, summary, changes, status, error, created_at, decided_at)
+        `INSERT INTO ${this.chatTables(kind).proposals} (id, session_id, message_id, title, summary, changes, status, error, created_at, decided_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
@@ -2264,45 +2333,50 @@ export class Store {
         timestamp,
         timestamp,
       );
-    this.touchDesignerSession(input.sessionId);
-    return this.getDesignerProposal(id)!;
+    this.chatTouchSession(kind, input.sessionId);
+    return this.chatGetProposal(kind, id)!;
   }
 
-  getDesignerProposal(id: string): DesignerProposal | null {
-    const row = this.db.prepare('SELECT * FROM designer_proposals WHERE id = ?').get(id) as Row | undefined;
-    return row ? this.mapDesignerProposal(row) : null;
+  chatGetProposal(kind: ChatRoleKind, id: string): DesignerProposal | null {
+    const row = this.db
+      .prepare(`SELECT * FROM ${this.chatTables(kind).proposals} WHERE id = ?`)
+      .get(id) as Row | undefined;
+    return row ? this.chatMapProposal(row) : null;
   }
 
-  listDesignerProposals(sessionId: string): DesignerProposal[] {
+  chatListProposals(kind: ChatRoleKind, sessionId: string): DesignerProposal[] {
     const rows = this.db
-      .prepare('SELECT * FROM designer_proposals WHERE session_id = ? ORDER BY created_at ASC')
+      .prepare(`SELECT * FROM ${this.chatTables(kind).proposals} WHERE session_id = ? ORDER BY created_at ASC`)
       .all(sessionId) as Row[];
-    return rows.map((row) => this.mapDesignerProposal(row));
+    return rows.map((row) => this.chatMapProposal(row));
   }
 
-  /** 设计师的会话与消息属于运行数据，随一键清空一起删除；设计师智能体本身保留。 */
-  resetDesignerData(): { sessions: number; messages: number; proposals: number } {
+  /* ---------------- reset（随一键清空） ---------------- */
+
+  /** 角色的会话与消息属于运行数据，随一键清空一起删除；角色智能体本身保留。 */
+  chatResetData(kind: ChatRoleKind): { sessions: number; messages: number; proposals: number } {
     return this.tx(() => {
+      const tables = this.chatTables(kind);
       const count = (table: string) => {
         const row = this.db.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as Row;
         return asNumber(row.c);
       };
       const result = {
-        sessions: count('designer_sessions'),
-        messages: count('designer_messages'),
-        proposals: count('designer_proposals'),
+        sessions: count(tables.sessions),
+        messages: count(tables.messages),
+        proposals: count(tables.proposals),
       };
-      this.db.exec('DELETE FROM designer_proposals;');
-      this.db.exec('DELETE FROM designer_messages;');
-      this.db.exec('DELETE FROM designer_sessions;');
+      this.db.exec(`DELETE FROM ${tables.proposals};`);
+      this.db.exec(`DELETE FROM ${tables.messages};`);
+      this.db.exec(`DELETE FROM ${tables.sessions};`);
       return result;
     });
   }
 
-  /** 设计师的系统级工作目录属于运行数据，随一键清空一起清空。 */
-  resetDesignerWorkspace(): void {
+  /** 角色的系统级工作目录属于运行数据，随一键清空一起清空。 */
+  chatResetWorkspace(kind: ChatRoleKind): void {
     try {
-      fs.rmSync(this.designerWorkspaceDir(), {
+      fs.rmSync(this.chatWorkspaceDir(kind), {
         recursive: true,
         force: true,
         maxRetries: 2,
@@ -2313,21 +2387,19 @@ export class Store {
     }
   }
 
-  /* --------------------------------------------------------------- */
-  /* designer uploads（对话附件，保存在设计师工作目录下）                  */
-  /* --------------------------------------------------------------- */
+  /* ---------------- uploads（对话附件，保存在角色工作目录下） ---------------- */
 
-  /** 设计师上传附件的根目录：`<designer>/uploads/`，按会话分目录。 */
-  designerUploadsRoot(): string {
-    return path.join(this.designerWorkspaceDir(), 'uploads');
+  /** 角色上传附件的根目录：`<角色目录>/uploads/`，按会话分目录。 */
+  chatUploadsRoot(kind: ChatRoleKind): string {
+    return path.join(this.chatWorkspaceDir(kind), 'uploads');
   }
 
   /** 某个会话的上传目录。会话 ID 是随机 UUID，这里同时校验它不含路径成分。 */
-  designerUploadDir(sessionId: string): string {
+  chatUploadDir(kind: ChatRoleKind, sessionId: string): string {
     assert(/^[A-Za-z0-9-]{8,64}$/.test(sessionId), 400, '会话 ID 不合法');
-    const dir = path.join(this.designerUploadsRoot(), sessionId);
+    const dir = path.join(this.chatUploadsRoot(kind), sessionId);
     assert(
-      path.resolve(dir).startsWith(path.resolve(this.designerUploadsRoot()) + path.sep),
+      path.resolve(dir).startsWith(path.resolve(this.chatUploadsRoot(kind)) + path.sep),
       500,
       '上传目录路径越界',
     );
@@ -2335,10 +2407,10 @@ export class Store {
   }
 
   /** 保存一个上传附件：文件名清洗、同名自动加序号，绝不覆盖已有文件。 */
-  saveDesignerUpload(sessionId: string, originalName: string, bytes: Buffer): DesignerAttachment {
-    assert(this.getDesignerSession(sessionId), 404, '会话不存在');
+  chatSaveUpload(kind: ChatRoleKind, sessionId: string, originalName: string, bytes: Buffer): DesignerAttachment {
+    assert(this.chatGetSession(kind, sessionId), 404, '会话不存在');
     assert(bytes.length > 0, 400, '附件内容为空');
-    const dir = this.designerUploadDir(sessionId);
+    const dir = this.chatUploadDir(kind, sessionId);
     fs.mkdirSync(dir, { recursive: true });
     const stored = uniqueUploadName(dir, sanitizeUploadName(originalName));
     fs.writeFileSync(path.join(dir, stored), bytes);
@@ -2352,12 +2424,12 @@ export class Store {
   }
 
   /**
-   * 校验并解析一个附件引用：附件 path 相对设计师工作区根（与发给模型的路径一致），
+   * 校验并解析一个附件引用：附件 path 相对角色工作区根（与发给模型的路径一致），
    * 但必须落在本会话的上传目录内。
    */
-  resolveDesignerUpload(sessionId: string, relPath: string, displayName?: string): DesignerAttachment {
-    const workspace = path.resolve(this.designerWorkspaceDir());
-    const uploadsDir = path.resolve(this.designerUploadDir(sessionId));
+  chatResolveUpload(kind: ChatRoleKind, sessionId: string, relPath: string, displayName?: string): DesignerAttachment {
+    const workspace = path.resolve(this.chatWorkspaceDir(kind));
+    const uploadsDir = path.resolve(this.chatUploadDir(kind, sessionId));
     const target = path.resolve(workspace, relPath);
     assert(
       target === uploadsDir || target.startsWith(uploadsDir + path.sep),
@@ -2381,9 +2453,9 @@ export class Store {
   }
 
   /** 读取一个附件的原始字节（预览 / 下载用）；路径越界或文件缺失返回 null。 */
-  readDesignerUpload(sessionId: string, relPath: string): { bytes: Buffer; fileName: string } | null {
-    const workspace = path.resolve(this.designerWorkspaceDir());
-    const uploadsDir = path.resolve(this.designerUploadDir(sessionId));
+  chatReadUpload(kind: ChatRoleKind, sessionId: string, relPath: string): { bytes: Buffer; fileName: string } | null {
+    const workspace = path.resolve(this.chatWorkspaceDir(kind));
+    const uploadsDir = path.resolve(this.chatUploadDir(kind, sessionId));
     const target = path.resolve(workspace, relPath);
     if (target !== uploadsDir && !target.startsWith(uploadsDir + path.sep)) return null;
     try {
@@ -2395,9 +2467,9 @@ export class Store {
   }
 
   /** 删除某个会话的全部上传文件（随会话删除 / 会话数据清理调用）。 */
-  deleteDesignerUploads(sessionId: string): void {
+  chatDeleteUploads(kind: ChatRoleKind, sessionId: string): void {
     try {
-      fs.rmSync(path.resolve(this.designerUploadDir(sessionId)), {
+      fs.rmSync(path.resolve(this.chatUploadDir(kind, sessionId)), {
         recursive: true,
         force: true,
         maxRetries: 2,
@@ -2412,8 +2484,8 @@ export class Store {
    * 清理「没有对应会话」的上传目录（孤儿附件）。数据库里已删除的会话不应留下
    * 无人引用的文件——升级迁移清空会话、或未来任何会话清理路径漏掉附件时兜底。
    */
-  purgeOrphanDesignerUploads(): number {
-    const root = this.designerUploadsRoot();
+  chatPurgeOrphanUploads(kind: ChatRoleKind): number {
+    const root = this.chatUploadsRoot(kind);
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(root, { withFileTypes: true });
@@ -2423,7 +2495,7 @@ export class Store {
     let removed = 0;
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      if (this.getDesignerSession(entry.name)) continue;
+      if (this.chatGetSession(kind, entry.name)) continue;
       const target = path.resolve(root, entry.name);
       // 双保险：只清理上传根目录内的目录。
       if (!target.startsWith(path.resolve(root) + path.sep)) continue;
@@ -2437,6 +2509,242 @@ export class Store {
     return removed;
   }
 
+  /* ---------------- designer（流水线设计师）：薄委托 ---------------- */
+
+  /** 设计师的系统级专属工作目录。 */
+  designerWorkspaceDir(): string {
+    return this.chatWorkspaceDir('designer');
+  }
+
+  ensureDesignerWorkspace(): string {
+    return this.chatEnsureWorkspace('designer');
+  }
+
+  resolveDesignerWorkspacePath(relPath: string): string {
+    return this.chatResolveWorkspacePath('designer', relPath);
+  }
+
+  listDesignerWorkspace(relPath: string): DesignerWorkspaceListing {
+    return this.chatListWorkspace('designer', relPath);
+  }
+
+  getDesignerAgent(): Agent | null {
+    return this.chatGetAgent('designer');
+  }
+
+  ensureDesignerAgent(definition: AgentInput): Agent {
+    return this.chatEnsureAgent('designer', definition);
+  }
+
+  listDesignerSessions(): DesignerSessionSummary[] {
+    return this.chatListSessions('designer');
+  }
+
+  getDesignerSession(id: string): DesignerSession | null {
+    return this.chatGetSession('designer', id);
+  }
+
+  createDesignerSession(title?: string): DesignerSession {
+    return this.chatCreateSession('designer', title);
+  }
+
+  renameDesignerSessionFromMessage(id: string, message: string): void {
+    this.chatRenameSessionFromMessage('designer', id, message);
+  }
+
+  touchDesignerSession(id: string): void {
+    this.chatTouchSession('designer', id);
+  }
+
+  compactDesignerSession(id: string, patch: { compactedSeq: number; summary: string }): DesignerSession {
+    return this.chatCompactSession('designer', id, patch);
+  }
+
+  deleteDesignerSession(id: string): DesignerSession {
+    return this.chatDeleteSession('designer', id);
+  }
+
+  appendDesignerMessage(sessionId: string, input: MessageInput): DesignerMessage {
+    return this.chatAppendMessage('designer', sessionId, input);
+  }
+
+  listDesignerMessages(sessionId: string): DesignerMessage[] {
+    return this.chatListMessages('designer', sessionId);
+  }
+
+  createDesignerProposal(input: {
+    sessionId: string;
+    messageId: string | null;
+    title: string;
+    summary: string;
+    changes: DesignerChangeOp[];
+    status: 'applied' | 'failed';
+    error?: string;
+  }): DesignerProposal {
+    return this.chatCreateProposal('designer', input);
+  }
+
+  getDesignerProposal(id: string): DesignerProposal | null {
+    return this.chatGetProposal('designer', id);
+  }
+
+  listDesignerProposals(sessionId: string): DesignerProposal[] {
+    return this.chatListProposals('designer', sessionId);
+  }
+
+  resetDesignerData(): { sessions: number; messages: number; proposals: number } {
+    return this.chatResetData('designer');
+  }
+
+  resetDesignerWorkspace(): void {
+    this.chatResetWorkspace('designer');
+  }
+
+  saveDesignerUpload(sessionId: string, originalName: string, bytes: Buffer): DesignerAttachment {
+    return this.chatSaveUpload('designer', sessionId, originalName, bytes);
+  }
+
+  resolveDesignerUpload(sessionId: string, relPath: string, displayName?: string): DesignerAttachment {
+    return this.chatResolveUpload('designer', sessionId, relPath, displayName);
+  }
+
+  readDesignerUpload(sessionId: string, relPath: string): { bytes: Buffer; fileName: string } | null {
+    return this.chatReadUpload('designer', sessionId, relPath);
+  }
+
+  deleteDesignerUploads(sessionId: string): void {
+    this.chatDeleteUploads('designer', sessionId);
+  }
+
+  purgeOrphanDesignerUploads(): number {
+    return this.chatPurgeOrphanUploads('designer');
+  }
+
+  designerUploadsRoot(): string {
+    return path.join(this.designerWorkspaceDir(), 'uploads');
+  }
+
+  designerUploadDir(sessionId: string): string {
+    return this.chatUploadDir('designer', sessionId);
+  }
+
+  /* ---------------- trainer（智能体训练师）：薄委托 ---------------- */
+
+  trainerWorkspaceDir(): string {
+    return this.chatWorkspaceDir('trainer');
+  }
+
+  listTrainerWorkspace(relPath = ''): DesignerWorkspaceListing {
+    return this.chatListWorkspace('trainer', relPath);
+  }
+
+  resolveTrainerWorkspacePath(relPath: string): string {
+    return this.chatResolveWorkspacePath('trainer', relPath);
+  }
+
+  touchTrainerSession(id: string): void {
+    this.chatTouchSession('trainer', id);
+  }
+
+  getTrainerProposal(id: string): DesignerProposal | null {
+    return this.chatGetProposal('trainer', id);
+  }
+
+  trainerUploadsRoot(): string {
+    return path.join(this.trainerWorkspaceDir(), 'uploads');
+  }
+
+  trainerUploadDir(sessionId: string): string {
+    return this.chatUploadDir('trainer', sessionId);
+  }
+
+  ensureTrainerWorkspace(): string {
+    return this.chatEnsureWorkspace('trainer');
+  }
+
+  getTrainerAgent(): Agent | null {
+    return this.chatGetAgent('trainer');
+  }
+
+  ensureTrainerAgent(definition: AgentInput): Agent {
+    return this.chatEnsureAgent('trainer', definition);
+  }
+
+  listTrainerSessions(): DesignerSessionSummary[] {
+    return this.chatListSessions('trainer');
+  }
+
+  getTrainerSession(id: string): DesignerSession | null {
+    return this.chatGetSession('trainer', id);
+  }
+
+  createTrainerSession(title?: string): DesignerSession {
+    return this.chatCreateSession('trainer', title);
+  }
+
+  renameTrainerSessionFromMessage(id: string, message: string): void {
+    this.chatRenameSessionFromMessage('trainer', id, message);
+  }
+
+  appendTrainerMessage(sessionId: string, input: MessageInput): DesignerMessage {
+    return this.chatAppendMessage('trainer', sessionId, input);
+  }
+
+  listTrainerMessages(sessionId: string): DesignerMessage[] {
+    return this.chatListMessages('trainer', sessionId);
+  }
+
+  listTrainerProposals(sessionId: string): DesignerProposal[] {
+    return this.chatListProposals('trainer', sessionId);
+  }
+
+  createTrainerProposal(input: {
+    sessionId: string;
+    messageId: string | null;
+    title: string;
+    summary: string;
+    changes: DesignerChangeOp[];
+    status: 'applied' | 'failed';
+    error?: string;
+  }): DesignerProposal {
+    return this.chatCreateProposal('trainer', input);
+  }
+
+  compactTrainerSession(id: string, patch: { compactedSeq: number; summary: string }): DesignerSession {
+    return this.chatCompactSession('trainer', id, patch);
+  }
+
+  deleteTrainerSession(id: string): DesignerSession {
+    return this.chatDeleteSession('trainer', id);
+  }
+
+  resetTrainerData(): { sessions: number; messages: number; proposals: number } {
+    return this.chatResetData('trainer');
+  }
+
+  resetTrainerWorkspace(): void {
+    this.chatResetWorkspace('trainer');
+  }
+
+  saveTrainerUpload(sessionId: string, originalName: string, bytes: Buffer): DesignerAttachment {
+    return this.chatSaveUpload('trainer', sessionId, originalName, bytes);
+  }
+
+  resolveTrainerUpload(sessionId: string, relPath: string, displayName?: string): DesignerAttachment {
+    return this.chatResolveUpload('trainer', sessionId, relPath, displayName);
+  }
+
+  readTrainerUpload(sessionId: string, relPath: string): { bytes: Buffer; fileName: string } | null {
+    return this.chatReadUpload('trainer', sessionId, relPath);
+  }
+
+  deleteTrainerUploads(sessionId: string): void {
+    this.chatDeleteUploads('trainer', sessionId);
+  }
+
+  purgeOrphanTrainerUploads(): number {
+    return this.chatPurgeOrphanUploads('trainer');
+  }
   /* ---------------------------------------------------------------- */
   /* stats & reset                                                     */
   /* ---------------------------------------------------------------- */

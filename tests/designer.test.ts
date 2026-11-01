@@ -393,7 +393,7 @@ describe('designer change execution（对话式变更：认可后直接生效）
     const detail = designer.getSessionDetail(session.id);
     expect(detail.proposals).toHaveLength(0);
     const toolMessage = detail.messages.find((message) => message.role === 'tool');
-    expect(toolMessage?.content).toContain('不能通过 apply_changes 修改或删除');
+    expect(toolMessage?.content).toContain('是系统角色，不能通过对话变更修改或删除');
     expect(call).toBe(2);
   });
 

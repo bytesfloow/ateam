@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Bot,
   DraftingCompass,
+  GraduationCap,
   ListTodo,
   MessageSquareWarning,
   MoreHorizontal,
@@ -24,6 +25,7 @@ import { Spinner } from './Spinner';
 
 const NAV_ITEMS = [
   { to: '/designer', label: '设计师', icon: DraftingCompass, match: (path: string) => path.startsWith('/designer') },
+  { to: '/trainer', label: '训练师', icon: GraduationCap, match: (path: string) => path.startsWith('/trainer') },
   { to: '/', label: '任务', icon: ListTodo, match: (path: string) => path === '/' || path.startsWith('/tasks') },
   { to: '/pipelines', label: '流水线', icon: Workflow, match: (path: string) => path.startsWith('/pipelines') },
   { to: '/agents', label: '智能体', icon: Bot, match: (path: string) => path.startsWith('/agents') },
@@ -179,7 +181,7 @@ export function Layout() {
           </div>
         </header>
 
-        <main className={cn('main', location.pathname.startsWith('/designer') && 'main--fill')}>
+        <main className={cn('main', (location.pathname.startsWith('/designer') || location.pathname.startsWith('/trainer')) && 'main--fill')}>
           <Outlet />
         </main>
       </div>

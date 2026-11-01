@@ -28,20 +28,36 @@ function EntryIcon({ entry }: { entry: DesignerWorkspaceEntry }) {
   return isImageName(entry.name) ? <ImageIcon size={15} /> : <FileText size={15} />;
 }
 
-/** 设计师工作目录文件预览弹窗（与交付物预览同一套能力）。 */
+/** 对话角色工作目录抽屉的文案包。 */
+export interface ChatWorkspaceCopy {
+  /** 根面包屑名（designer / trainer）。 */
+  root: string;
+  title: string;
+  description: string;
+  emptyTitle: string;
+  emptyDescription: string;
+  truncatedHint: string;
+}
+
+/** 工作目录文件预览弹窗（与交付物预览同一套能力）。 */
 function WorkspaceFilePreviewModal({
+  kind,
   path,
   open,
   onClose,
 }: {
+  kind: 'designer' | 'trainer';
   path: string | null;
   open: boolean;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
   const query = useQuery({
-    queryKey: ['designer-workspace-file', path],
-    queryFn: () => api.getDesignerWorkspacePreview(path!),
+    queryKey: [`${kind}-workspace-file`, path],
+    queryFn: () =>
+      kind === 'designer'
+        ? api.getDesignerWorkspacePreview(path!)
+        : api.getTrainerWorkspacePreview(path!),
     enabled: open && Boolean(path),
     staleTime: 5_000,
   });
@@ -49,18 +65,18 @@ function WorkspaceFilePreviewModal({
   useEffect(() => {
     // 关闭时清掉缓存，保证每次打开都重新读取最新文件内容。
     if (!open && path) {
-      queryClient.removeQueries({ queryKey: ['designer-workspace-file', path] });
+      queryClient.removeQueries({ queryKey: [`${kind}-workspace-file`, path] });
     }
-  }, [open, path, queryClient]);
+  }, [kind, open, path, queryClient]);
 
   const file = query.data?.file ?? null;
   const rawUrl = useMemo(
-    () => (path ? api.designerWorkspaceUrl(path, 'raw') : ''),
-    [path],
+    () => (path ? (kind === 'designer' ? api.designerWorkspaceUrl(path, 'raw') : api.trainerWorkspaceUrl(path, 'raw')) : ''),
+    [kind, path],
   );
   const downloadUrl = useMemo(
-    () => (path ? api.designerWorkspaceUrl(path, 'download') : ''),
-    [path],
+    () => (path ? (kind === 'designer' ? api.designerWorkspaceUrl(path, 'download') : api.trainerWorkspaceUrl(path, 'download')) : ''),
+    [kind, path],
   );
 
   return (
@@ -100,36 +116,37 @@ function WorkspaceFilePreviewModal({
 }
 
 /**
- * 设计师工作目录抽屉：只读浏览 `workspaces\designer\` 的目录结构，
+ * 对话角色（设计师 / 训练师）工作目录抽屉：只读浏览 workspaces/<kind>/ 的目录结构，
  * 支持逐级进入（面包屑）、刷新与常见格式在线预览 / 下载。
  */
-export function DesignerWorkspaceDrawer({
+export function ChatWorkspaceDrawer({
+  kind,
+  copy,
   open,
   onClose,
 }: {
+  kind: 'designer' | 'trainer';
+  copy: ChatWorkspaceCopy;
   open: boolean;
   onClose: () => void;
 }) {
+  const queryClient = useQueryClient();
   const [path, setPath] = useState('');
   const [previewPath, setPreviewPath] = useState<string | null>(null);
 
-  // 每次打开都回到根目录，避免停留在已被清空 / 删除的层级。
   useEffect(() => {
-    if (open) {
-      setPath('');
-      setPreviewPath(null);
-    }
+    if (open) setPath('');
   }, [open]);
 
-  const query = useQuery({
-    queryKey: ['designer-workspace', path],
-    queryFn: () => api.listDesignerWorkspace(path),
-    enabled: open,
-    staleTime: 0,
-  });
-  const listing = query.data?.listing ?? null;
+  const crumbs = useMemo(() => path.split('/').filter(Boolean), [path]);
 
-  const crumbs = useMemo(() => (path ? path.split('/') : []), [path]);
+  const query = useQuery({
+    queryKey: [`${kind}-workspace`, path],
+    enabled: open,
+    queryFn: () =>
+      kind === 'designer' ? api.listDesignerWorkspace(path) : api.listTrainerWorkspace(path),
+  });
+  const listing = query.data?.listing;
 
   return (
     <Drawer
@@ -139,10 +156,10 @@ export function DesignerWorkspaceDrawer({
       title={
         <span className="drawer-title">
           <FolderOpen size={16} />
-          设计师 · 工作目录
+          {copy.title}
         </span>
       }
-      description="设计师的系统级专属工作目录（跨会话持久）。这里只读浏览与预览；需要整理文件时直接在对话里告诉设计师。"
+      description={copy.description}
       footer={
         <div className="drawer-footer-row">
           <button
@@ -167,7 +184,7 @@ export function DesignerWorkspaceDrawer({
           onClick={() => setPath('')}
           disabled={path === ''}
         >
-          designer
+          {copy.root}
         </button>
         {crumbs.map((segment, index) => {
           const target = crumbs.slice(0, index + 1).join('/');
@@ -198,64 +215,64 @@ export function DesignerWorkspaceDrawer({
       ) : !listing || listing.entries.length === 0 ? (
         <EmptyState
           icon={FolderOpen}
-          title="目录是空的"
-          description="设计师还没有在这里存放文件。上传的对话附件会出现在 uploads\ 下；也可以在对话里让设计师把草稿写进工作目录。"
+          title={copy.emptyTitle}
+          description={copy.emptyDescription}
           compact
         />
       ) : (
         <div className="ws-list">
-          {path ? (
-            <button type="button" className="ws-row ws-row--up" onClick={() => setPath(crumbs.slice(0, -1).join('/'))}>
-              <FolderUp size={15} />
-              <span className="ws-row-name">返回上一级</span>
-            </button>
-          ) : null}
-          {listing.entries.map((entry) =>
-            entry.type === 'dir' ? (
-              <button
-                key={entry.path}
-                type="button"
-                className="ws-row"
-                title={entry.path}
-                onClick={() => setPath(entry.path)}
-              >
+          {listing.entries.map((entry) => (
+            <div
+              key={entry.path}
+              className={cn('ws-row', entry.type === 'dir' && 'ws-row--dir')}
+              role={entry.type === 'dir' ? 'button' : undefined}
+              tabIndex={entry.type === 'dir' ? 0 : undefined}
+              onClick={() => {
+                if (entry.type === 'dir') setPath(entry.path);
+                else setPreviewPath(entry.path);
+              }}
+              onKeyDown={(event) => {
+                if (entry.type === 'dir' && (event.key === 'Enter' || event.key === ' ')) {
+                  setPath(entry.path);
+                }
+              }}
+            >
+              <span className="ws-row-icon">
                 <EntryIcon entry={entry} />
-                <span className="ws-row-name">{entry.name}</span>
-                <span className="ws-row-size">文件夹</span>
-              </button>
-            ) : (
-              <div key={entry.path} className="ws-row" role="button" tabIndex={0}
-                title={entry.path}
-                onClick={() => setPreviewPath(entry.path)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') setPreviewPath(entry.path);
-                }}
-              >
-                <EntryIcon entry={entry} />
-                <span className="ws-row-name">{entry.name}</span>
-                <span className="ws-row-size">{formatBytes(entry.size)}</span>
-                <a
-                  className="icon-button ws-row-download"
-                  title="下载文件"
-                  aria-label={`下载 ${entry.name}`}
-                  href={api.designerWorkspaceUrl(entry.path, 'download')}
-                  download={entry.name}
-                  onClick={(event) => event.stopPropagation()}
-                >
-                  <Download size={14} />
-                </a>
-              </div>
-            ),
-          )}
-          {listing.truncated ? (
-            <div className="callout callout--warning ws-truncated">
-              内容过多，仅显示前 {listing.entries.length} 项；可在对话里让设计师整理这个目录。
+              </span>
+              <span className="ws-row-name" title={entry.path}>
+                {entry.name}
+              </span>
+              <span className="ws-row-size">{entry.type === 'dir' ? '' : formatBytes(entry.size)}</span>
+              {entry.type === 'dir' ? <FolderUp size={14} className="ws-row-arrow" /> : null}
+              {entry.type === 'file' ? (
+                <div className="ws-row-actions">
+                  <a
+                    className="icon-button ws-row-download"
+                    title="下载文件"
+                    aria-label={`下载 ${entry.name}`}
+                    href={
+                      kind === 'designer'
+                        ? api.designerWorkspaceUrl(entry.path, 'download')
+                        : api.trainerWorkspaceUrl(entry.path, 'download')
+                    }
+                    download={entry.name}
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <Download size={14} />
+                  </a>
+                </div>
+              ) : null}
             </div>
+          ))}
+          {listing.truncated ? (
+            <div className="callout callout--warning ws-truncated">{copy.truncatedHint}</div>
           ) : null}
         </div>
       )}
 
       <WorkspaceFilePreviewModal
+        kind={kind}
         path={previewPath}
         open={previewPath !== null}
         onClose={() => setPreviewPath(null)}

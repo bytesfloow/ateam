@@ -28,6 +28,13 @@ import type {
   ThinkingLevel,
   TurnDetail,
   BuiltinToolInfo,
+  TrainerProfile,
+  TrainerSession,
+  TrainerSessionDetail,
+  TrainerSessionSummary,
+  TrainerAttachment,
+  TrainerWorkspaceFilePreview,
+  TrainerWorkspaceListing,
 } from '@shared/types';
 
 export class ApiError extends Error {
@@ -250,6 +257,55 @@ export const api = {
   compressDesigner: () => request<{ compressed: number }>('/api/designer/compress', json('POST', {})),
   /** 清空对话记录：删除当前会话（消息、全部变更记录、上传附件），从全新会话开始。 */
   clearDesignerConversation: () => request<{ cleared: boolean }>('/api/designer/clear', json('POST', {})),
+
+  listTrainerSessions: () =>
+    request<{
+      sessions: TrainerSessionSummary[];
+      busy: boolean;
+      busySessionId: string | null;
+    }>('/api/trainer/sessions'),
+  createTrainerSession: (title?: string) =>
+    request<{ session: TrainerSession }>('/api/trainer/sessions', json('POST', title ? { title } : {})),
+  getTrainerSession: (id: string) =>
+    request<TrainerSessionDetail>(`/api/trainer/sessions/${encodeURIComponent(id)}`),
+  deleteTrainerSession: (id: string) =>
+    request<{ session: TrainerSession }>(`/api/trainer/sessions/${encodeURIComponent(id)}`, json('DELETE')),
+  sendTrainerMessage: (id: string, content: string, attachments: Pick<TrainerAttachment, 'name' | 'path'>[] = []) =>
+    request<{ accepted: boolean }>(
+      `/api/trainer/sessions/${encodeURIComponent(id)}/messages`,
+      json('POST', { content, ...(attachments.length > 0 ? { attachments } : {}) }),
+    ),
+  /** 上传对话附件：原始字节直传，保存到该会话的上传目录。 */
+  uploadTrainerFile: (sessionId: string, file: File) =>
+    request<{ attachment: TrainerAttachment }>(
+      `/api/trainer/uploads?sessionId=${encodeURIComponent(sessionId)}&name=${encodeURIComponent(file.name)}`,
+      { method: 'POST', body: file, headers: { 'Content-Type': 'application/octet-stream' } },
+    ),
+  /** 已上传附件的访问地址（图片可直接作为 img src 预览）。 */
+  trainerUploadUrl: (sessionId: string, path: string, download = false) =>
+    `/api/trainer/uploads/file?sessionId=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}${
+      download ? '&download=1' : ''
+    }`,
+  /** 训练师详情：实时拼装的系统提示词、生效工具、技能与运行时信息。 */
+  getTrainerProfile: () => request<{ profile: TrainerProfile }>('/api/trainer/profile'),
+  /** 训练师工作目录某一层的清单（path 为空表示根目录）。 */
+  listTrainerWorkspace: (path = '') =>
+    request<{ listing: TrainerWorkspaceListing }>(
+      `/api/trainer/workspace?mode=list&path=${encodeURIComponent(path)}`,
+    ),
+  /** 工作目录文件的文本/元数据预览（图片、PDF 请用 trainerWorkspaceUrl 的 raw 地址）。 */
+  getTrainerWorkspacePreview: (path: string) =>
+    request<{ file: TrainerWorkspaceFilePreview }>(
+      `/api/trainer/workspace?mode=preview&path=${encodeURIComponent(path)}`,
+    ),
+  /** 工作目录文件原始字节地址（mode=raw inline / mode=download 附件）。 */
+  trainerWorkspaceUrl: (path: string, mode: 'raw' | 'download' = 'raw') =>
+    `/api/trainer/workspace?mode=${mode}&path=${encodeURIComponent(path)}`,
+  stopTrainer: () => request<{ stopped: boolean }>('/api/trainer/stop', json('POST', {})),
+  /** 手动压缩上下文（摘要式）：compressed=0 表示当前用量未超水位、无需压缩。 */
+  compressTrainer: () => request<{ compressed: number }>('/api/trainer/compress', json('POST', {})),
+  /** 清空对话记录：删除当前会话（消息、全部变更记录、上传附件），从全新会话开始。 */
+  clearTrainerConversation: () => request<{ cleared: boolean }>('/api/trainer/clear', json('POST', {})),
 
   reset: () =>
     request<{ result: { tasks: number; turns: number; messages: number } }>(

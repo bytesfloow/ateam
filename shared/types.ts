@@ -814,6 +814,29 @@ export interface DesignerProfile {
 }
 
 /* ------------------------------------------------------------------ */
+/* Trainer（智能体训练师）                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 智能体训练师与流水线设计师共用同一套对话会话结构与变更留档结构：
+ * 训练师不设计流水线，但变更模型（智能体 / 工具 / 技能）完全一致。
+ */
+export const TRAINER_SLUG = 'trainer';
+
+export type TrainerSession = DesignerSession;
+export type TrainerSessionSummary = DesignerSessionSummary;
+export type TrainerMessage = DesignerMessage;
+export type TrainerChangeOp = DesignerChangeOp;
+export type TrainerProposal = DesignerProposal;
+export type TrainerSessionDetail = DesignerSessionDetail;
+export type TrainerToolInfo = DesignerToolInfo;
+export type TrainerProfile = DesignerProfile;
+export type TrainerAttachment = DesignerAttachment;
+export type TrainerWorkspaceEntry = DesignerWorkspaceEntry;
+export type TrainerWorkspaceListing = DesignerWorkspaceListing;
+export type TrainerWorkspaceFilePreview = DesignerWorkspaceFilePreview;
+
+/* ------------------------------------------------------------------ */
 /* Misc                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -840,6 +863,12 @@ export interface RealtimeEvent {
     | 'designer.delta'
     | 'designer.reasoning'
     | 'designer.proposal'
+    | 'trainer.session'
+    | 'trainer.message'
+    | 'trainer.status'
+    | 'trainer.delta'
+    | 'trainer.reasoning'
+    | 'trainer.proposal'
     | 'reset';
   taskId?: string;
   turnId?: string;
@@ -861,6 +890,8 @@ export interface StatusSnapshot {
   openFeedback: number;
   /** 流水线设计师是否正在生成回复（由 system 路由合成；Runtime 自身不感知设计师）。 */
   designerBusy?: boolean;
+  /** 智能体训练师是否正在生成回复（由 system 路由合成；Runtime 自身不感知训练师）。 */
+  trainerBusy?: boolean;
 }
 
 export interface ResetResult {
