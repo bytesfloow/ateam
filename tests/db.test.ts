@@ -27,7 +27,7 @@ describe('database schema', () => {
   it('creates the pipeline schema on a fresh database', () => {
     const db = openDatabase(':memory:');
     try {
-      expect(userVersion(db)).toBe(12);
+      expect(userVersion(db)).toBe(13);
       expect(tableNamesOf(db)).toEqual(
         expect.arrayContaining([
           'settings',
@@ -148,7 +148,7 @@ describe('database schema', () => {
 
     const db = openDatabase(file);
     try {
-      expect(userVersion(db)).toBe(12);
+      expect(userVersion(db)).toBe(13);
       expect(tableNamesOf(db)).toContain('pipelines');
 
       // 业务数据（智能体、流水线、任务、回合等）全部清空，schema 重建。
@@ -333,6 +333,80 @@ describe('schema migrations', () => {
       expect(userVersion(db)).toBe(11);
       expect(columnsOf(db, 'agents')).not.toContain('max_iterations');
       expect(db.prepare('SELECT COUNT(*) AS c FROM agents').get()).toMatchObject({ c: 1 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('v12 → v13：试运行任务与流水线任务分离（agents.prompt、tasks.kind、删训练台流水线）', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE agents (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          slug TEXT NOT NULL UNIQUE,
+          description TEXT NOT NULL DEFAULT '',
+          responsibilities TEXT NOT NULL DEFAULT '',
+          deliverable TEXT NOT NULL DEFAULT '',
+          guide TEXT NOT NULL DEFAULT '',
+          model TEXT,
+          temperature REAL,
+          tools TEXT NOT NULL,
+          skill_ids TEXT NOT NULL DEFAULT '[]',
+          accent TEXT NOT NULL DEFAULT '#6d8cff',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE pipelines (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          nodes TEXT NOT NULL DEFAULT '[]',
+          edges TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE tasks (
+          id TEXT PRIMARY KEY,
+          task TEXT NOT NULL,
+          status TEXT NOT NULL,
+          start_agent_id TEXT NOT NULL,
+          pipeline_id TEXT,
+          pipeline_name TEXT NOT NULL DEFAULT '',
+          pipeline_snapshot TEXT,
+          current_node_id TEXT,
+          current_turn_id TEXT,
+          error TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          finished_at TEXT
+        );
+        INSERT INTO agents (id, name, slug, tools, created_at, updated_at)
+        VALUES ('a1', '被训智能体', 'agent-x', '{"builtin":[],"custom":[]}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+        INSERT INTO pipelines (id, name, nodes, edges, created_at, updated_at)
+        VALUES ('p1', '智能体训练台', '[]', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+               ('p2', '业务流水线', '[]', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+        INSERT INTO tasks (id, task, status, start_agent_id, pipeline_id, pipeline_name, pipeline_snapshot, created_at, updated_at)
+        VALUES ('t-test', '试运行', 'completed', 'a1', 'p1', '智能体训练台', NULL, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+               ('t-biz', '业务任务', 'completed', 'a1', 'p2', '业务流水线', '{}', '2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z');
+        PRAGMA user_version = 12;
+      `);
+
+      applyMigrations(db, 12, 13);
+      expect(userVersion(db)).toBe(13);
+      // agents 获得 prompt 列（NULL = 流水线模板型）。
+      expect(columnsOf(db, 'agents')).toContain('prompt');
+      expect(columnsOf(db, 'tasks')).toContain('kind');
+      // 存量「智能体训练台」任务刷为 test，业务任务保持 pipeline。
+      const kinds = Object.fromEntries(
+        (db.prepare('SELECT id, kind FROM tasks').all() as { id: string; kind: string }[]).map((row) => [row.id, row.kind]),
+      );
+      expect(kinds).toEqual({ 't-test': 'test', 't-biz': 'pipeline' });
+      // 训练台流水线被删除；业务流水线保留。
+      const pipelines = (db.prepare('SELECT name FROM pipelines').all() as { name: string }[]).map((row) => row.name);
+      expect(pipelines).toEqual(['业务流水线']);
     } finally {
       db.close();
     }

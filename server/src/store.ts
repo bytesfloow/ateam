@@ -45,6 +45,7 @@ import {
   type SkillInput,
   type Stats,
   type TaskDetail,
+  type TaskKind,
   type TaskStatus,
   type TaskSummary,
   type ThinkingLevel,
@@ -118,6 +119,9 @@ export interface ChatMessageInput {
 
 /** 单个提示词字段的长度上限。 */
 export const PROMPT_FIELD_MAX = 20_000;
+
+/** 训练型智能体完整系统提示词的上限（比单个四件套字段宽：它是整份提示词）。 */
+export const AGENT_PROMPT_MAX = 60_000;
 
 const ACCENTS = ['#6d8cff', '#38bdf8', '#34d399', '#f59e0b', '#f472b6', '#a78bfa', '#fb7185', '#2dd4bf'];
 
@@ -657,6 +661,7 @@ export class Store {
       responsibilities: asString(row.responsibilities),
       deliverable: asString(row.deliverable),
       guide: asString(row.guide),
+      prompt: row.prompt === null || row.prompt === undefined ? null : asString(row.prompt) || null,
       model: row.model === null || row.model === undefined || row.model === '' ? null : asString(row.model),
       temperature: row.temperature === null || row.temperature === undefined ? null : asNumber(row.temperature),
       tools: parseJson<AgentToolsConfig>(row.tools, { builtin: DEFAULT_BUILTINS, custom: [] }),
@@ -744,6 +749,9 @@ export class Store {
     assert(responsibilities.length <= PROMPT_FIELD_MAX, 400, `任务说明不能超过 ${PROMPT_FIELD_MAX} 个字符`);
     assert(deliverable.length <= PROMPT_FIELD_MAX, 400, `交付要求不能超过 ${PROMPT_FIELD_MAX} 个字符`);
     assert(guide.length <= PROMPT_FIELD_MAX, 400, `工作指南不能超过 ${PROMPT_FIELD_MAX} 个字符`);
+    // 训练型智能体：prompt 非空（空白视为空）；流水线型：null。
+    const prompt = input.prompt === null || input.prompt === undefined ? null : String(input.prompt).trim() || null;
+    assert(prompt === null || prompt.length <= AGENT_PROMPT_MAX, 400, `提示词不能超过 ${AGENT_PROMPT_MAX} 个字符`);
     const model = input.model === null || input.model === undefined ? null : String(input.model).trim() || null;
     if (model) assert(model.length <= 100, 400, '模型名称不能超过 100 个字符');
     const temperature =
@@ -763,8 +771,8 @@ export class Store {
       this.db
         .prepare(
           `INSERT INTO agents
-           (id, name, slug, description, responsibilities, deliverable, guide, model, temperature, tools, skill_ids, accent, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, name, slug, description, responsibilities, deliverable, guide, prompt, model, temperature, tools, skill_ids, accent, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -774,6 +782,7 @@ export class Store {
           responsibilities,
           deliverable,
           guide,
+          prompt,
           model,
           temperature,
           JSON.stringify(tools),
@@ -805,6 +814,13 @@ export class Store {
     assert(responsibilities.length <= PROMPT_FIELD_MAX, 400, `任务说明不能超过 ${PROMPT_FIELD_MAX} 个字符`);
     assert(deliverable.length <= PROMPT_FIELD_MAX, 400, `交付要求不能超过 ${PROMPT_FIELD_MAX} 个字符`);
     assert(guide.length <= PROMPT_FIELD_MAX, 400, `工作指南不能超过 ${PROMPT_FIELD_MAX} 个字符`);
+    const prompt =
+      input.prompt === undefined
+        ? current.prompt
+        : input.prompt === null
+          ? null
+          : String(input.prompt).trim() || null;
+    assert(prompt === null || prompt.length <= AGENT_PROMPT_MAX, 400, `提示词不能超过 ${AGENT_PROMPT_MAX} 个字符`);
     const model =
       input.model === undefined
         ? current.model
@@ -826,7 +842,7 @@ export class Store {
     try {
       this.db
         .prepare(
-          `UPDATE agents SET name = ?, description = ?, responsibilities = ?, deliverable = ?, guide = ?, model = ?, temperature = ?,
+          `UPDATE agents SET name = ?, description = ?, responsibilities = ?, deliverable = ?, guide = ?, prompt = ?, model = ?, temperature = ?,
              tools = ?, skill_ids = ?, accent = ?, updated_at = ?
            WHERE id = ?`,
         )
@@ -836,6 +852,7 @@ export class Store {
           responsibilities,
           deliverable,
           guide,
+          prompt,
           model,
           temperature,
           JSON.stringify(tools),
@@ -1519,6 +1536,7 @@ export class Store {
       id: asString(row.id),
       task: asString(row.task),
       status,
+      kind: (asString(row.kind ?? 'pipeline') === 'test' ? 'test' : 'pipeline') as TaskKind,
       startAgentId: asString(row.start_agent_id),
       pipelineId: row.pipeline_id === null || row.pipeline_id === undefined ? null : asString(row.pipeline_id),
       pipelineName: asString(row.pipeline_name),
@@ -1600,14 +1618,23 @@ export class Store {
     this.db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...params);
   }
 
-  /** 创建任务并生成第一个环节（起点节点）。 */
+  /**
+   * 创建任务并生成第一个环节（起点节点）。
+   * pipeline 型按图流转；test 型（试运行）只有这一个环节：无流水线关联、
+   * node_id 为 NULL，完成后交付给用户评审。
+   */
   createTask(params: {
     task: string;
-    pipeline: Pipeline;
-    node: PipelineNode;
+    kind?: TaskKind;
+    pipeline?: Pipeline | null;
+    node?: PipelineNode | null;
     agent: Agent;
   }): { taskId: string; turnId: string; conversationId: string } {
-    const { node, agent } = params;
+    const kind: TaskKind = params.kind ?? 'pipeline';
+    const { agent } = params;
+    const node = params.node ?? null;
+    const pipeline = params.pipeline ?? null;
+    if (kind === 'pipeline') assert(pipeline && node, 400, '流水线任务缺少流水线或起点节点');
     const task = String(params.task ?? '').trim();
     assert(task.length >= 1 && task.length <= 50_000, 400, '任务内容长度需在 1-50000 个字符之间');
     const taskId = randomUUID();
@@ -1618,17 +1645,18 @@ export class Store {
       this.db
         .prepare(
           `INSERT INTO tasks
-             (id, task, status, start_agent_id, pipeline_id, pipeline_name, pipeline_snapshot, current_node_id, current_turn_id, error, created_at, updated_at)
-           VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+             (id, task, status, kind, start_agent_id, pipeline_id, pipeline_name, pipeline_snapshot, current_node_id, current_turn_id, error, created_at, updated_at)
+           VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
         )
         .run(
           taskId,
           task,
+          kind,
           agent.id,
-          params.pipeline.id,
-          params.pipeline.name,
-          JSON.stringify(params.pipeline),
-          node.id,
+          pipeline ? pipeline.id : null,
+          pipeline ? pipeline.name : agent.name,
+          pipeline ? JSON.stringify(pipeline) : null,
+          node ? node.id : null,
           turnId,
           timestamp,
           timestamp,
@@ -1639,7 +1667,7 @@ export class Store {
              (id, task_id, seq, node_id, agent_id, agent_name, agent_accent, status, input, output, iterations)
            VALUES (?, ?, 1, ?, ?, ?, ?, 'running', '', '', 0)`,
         )
-        .run(turnId, taskId, node.id, agent.id, agent.name, agent.accent);
+        .run(turnId, taskId, node ? node.id : null, agent.id, agent.name, agent.accent);
       this.db
         .prepare('INSERT INTO conversations (id, task_id, turn_id, agent_id, created_at) VALUES (?, ?, ?, ?, ?)')
         .run(conversationId, taskId, turnId, agent.id, timestamp);
@@ -1647,8 +1675,8 @@ export class Store {
     return { taskId, turnId, conversationId };
   }
 
-  /** 为任务追加下一环节（沿连线推进到指定节点）。 */
-  createTurn(taskId: string, agent: Agent, node: PipelineNode): { turnId: string; conversationId: string; seq: number } {
+  /** 为任务追加下一环节（沿连线推进到指定节点）；试运行任务 node 传 null。 */
+  createTurn(taskId: string, agent: Agent, node: PipelineNode | null): { turnId: string; conversationId: string; seq: number } {
     const task = this.getTask(taskId);
     assert(task, 404, '任务不存在');
     const turnId = randomUUID();
@@ -1664,13 +1692,13 @@ export class Store {
              (id, task_id, seq, node_id, agent_id, agent_name, agent_accent, status, input, output, iterations)
            VALUES (?, ?, ?, ?, ?, ?, ?, 'running', '', '', 0)`,
         )
-        .run(turnId, taskId, next, node.id, agent.id, agent.name, agent.accent);
+        .run(turnId, taskId, next, node ? node.id : null, agent.id, agent.name, agent.accent);
       this.db
         .prepare('INSERT INTO conversations (id, task_id, turn_id, agent_id, created_at) VALUES (?, ?, ?, ?, ?)')
         .run(conversationId, taskId, turnId, agent.id, now());
       this.db
         .prepare('UPDATE tasks SET current_turn_id = ?, current_node_id = ?, updated_at = ? WHERE id = ?')
-        .run(turnId, node.id, now(), taskId);
+        .run(turnId, node ? node.id : null, now(), taskId);
       return next;
     });
     return { turnId, conversationId, seq };
@@ -1795,11 +1823,51 @@ export class Store {
     const row = this.db
       .prepare(
         `${this.taskSummaryQuery(
-          "WHERE t.status IN ('running','paused','waiting_human')",
+          "WHERE t.kind = 'pipeline' AND t.status IN ('running','paused','waiting_human')",
         )} ORDER BY t.created_at DESC LIMIT 1`,
       )
       .get() as Row | undefined;
     return row ? this.mapTaskSummary(row) : null;
+  }
+
+  /**
+   * 当前活动的试运行任务（kind='test'）。与流水线任务的互斥相互独立：
+   * 一类任务在跑不影响另一类。
+   */
+  findActiveTestTask(): TaskSummary | null {
+    const row = this.db
+      .prepare(
+        `${this.taskSummaryQuery(
+          "WHERE t.kind = 'test' AND t.status IN ('running','paused','waiting_human')",
+        )} ORDER BY t.created_at DESC LIMIT 1`,
+      )
+      .get() as Row | undefined;
+    return row ? this.mapTaskSummary(row) : null;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* trainer focus（当前训练对象，跨会话持久）                          */
+  /* ---------------------------------------------------------------- */
+
+  /** 当前训练对象：训练师一次只训练一个智能体。悬空引用（已删除）自动视为无训练对象。 */
+  trainerFocusAgent(): Agent | null {
+    const id = asString(this.rawSetting('trainer.focusAgentId') ?? '');
+    if (!id) return null;
+    const agent = this.getAgent(id);
+    return agent ?? null;
+  }
+
+  setTrainerFocusAgentId(id: string | null): void {
+    if (id === null) {
+      this.setRawSetting('trainer.focusAgentId', null);
+      return;
+    }
+    this.setRawSetting('trainer.focusAgentId', id);
+  }
+
+  /** 智能体是否被任何流水线引用（训练师不能接管流水线中的智能体）。 */
+  agentIsInPipeline(agentId: string): boolean {
+    return this.listPipelines().some((pipeline) => pipeline.nodes.some((node) => node.agentId === agentId));
   }
 
   /* ---------------------------------------------------------------- */
@@ -2812,7 +2880,7 @@ export class Store {
         .prepare(
           "UPDATE tasks SET status = 'paused', error = ?, updated_at = ? WHERE id = ?",
         )
-        .run('服务重启，流水线停在本环节；可重试或终止任务', timestamp, taskId);
+        .run('服务重启，任务停在本环节；可重试或终止任务', timestamp, taskId);
     }
     return rows.length;
   }

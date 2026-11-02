@@ -371,9 +371,9 @@ export class ChatAgentRuntime {
 
     const builtinInfo = new Map(BUILTIN_TOOL_INFOS.map((info) => [info.name, info]));
     const isBuiltin = (name: string): boolean => (BUILTIN_TOOL_NAMES as readonly string[]).includes(name);
-    // 生效工具 = 统一授予的内置/自定义工具（去掉流水线专用的 handoff）+ 角色专属管理工具。
+    // 生效工具 = 统一授予的内置/自定义工具（去掉任务收尾专用工具）+ 角色专属管理工具。
     const effective: DesignerToolInfo[] = resolveTools(this.store, agent)
-      .filter((tool) => tool.spec.function.name !== 'handoff')
+      .filter((tool) => tool.spec.function.name !== 'handoff' && tool.spec.function.name !== 'submit')
       .map((tool) => {
         const name = tool.spec.function.name;
         const info = builtinInfo.get(name);
@@ -661,10 +661,12 @@ export class ChatAgentRuntime {
 
     const workspace = this.store.chatEnsureWorkspace(this.spec.kind);
     const link: { messageId: string | null } = { messageId: null };
-    // handoff 由 makeBuiltinTools 强制注入（流水线环节专用）；对话角色没有任务与交付，
+    // handoff / submit 是任务收尾工具（分别属于流水线与试运行任务）；对话角色没有任务与交付，
     // 必须过滤掉，否则模型（尤其测试中的 MockProvider 替身）会反复调用它形成无限工具循环。
     const resolvedTools = [
-      ...resolveTools(this.store, agent).filter((tool) => tool.spec.function.name !== 'handoff'),
+      ...resolveTools(this.store, agent).filter(
+        (tool) => tool.spec.function.name !== 'handoff' && tool.spec.function.name !== 'submit',
+      ),
       ...this.spec.makeTools({
         store: this.store,
         sessionId,
@@ -709,6 +711,7 @@ export class ChatAgentRuntime {
       signal,
       settings,
       systemPrompt,
+      taskKind: 'pipeline',
       pipeline: { id: '', name: '', description: '', nodes: [], edges: [], createdAt: '', updatedAt: '' },
       node: { id: this.spec.kind === 'designer' ? DESIGNER_SLUG : TRAINER_SLUG, agentId: agent.id, isStart: true, x: 0, y: 0 },
       outgoing: [],

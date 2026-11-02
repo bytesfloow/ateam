@@ -86,6 +86,14 @@ async function waitForIdle(trainer: TrainerRuntime): Promise<void> {
   await waitFor(() => !trainer.busy);
 }
 
+/** 等全部任务回合跑完（无 busy 智能体且没有 running 任务）。 */
+async function waitForTasksIdle(harness: Harness): Promise<void> {
+  await waitFor(() => {
+    const active = harness.store.findActiveTestTask() ?? harness.store.findActiveTask();
+    return !active || !['running'].includes(active.status);
+  });
+}
+
 function toolCall(name: string, args: unknown, text = ''): LlmResponse {
   return {
     content: text,
@@ -95,6 +103,18 @@ function toolCall(name: string, args: unknown, text = ''): LlmResponse {
 
 function textReply(content: string): LlmResponse {
   return { content, toolCalls: [] };
+}
+
+/** 被训智能体的标准替身：先写交付文件再 submit（submit 的目录必须真实存在）。 */
+function submitAfterWrite(text = '交付完成'): (request: LlmRequest) => LlmResponse {
+  let n = 0;
+  return () => {
+    n += 1;
+    if (n === 1) {
+      return toolCall('write', { file_path: 'output/report.md', content: '# 交付\n测试产出。' });
+    }
+    return toolCall('submit', { folder: 'output' }, text);
+  };
 }
 
 /** 区分训练师对话与测试任务：任务智能体按名字分流。 */
@@ -122,26 +142,85 @@ describe('trainer agent', () => {
     expect(again!.description).toBe('人类改过的描述');
   });
 
-  it('系统提示词包含三条训练规则：从 0 写提示词、先讲思路再动手、改完必测并请用户评审', () => {
+  it('系统提示词：正向描述工作规则，不含负向划界与模板禁令', () => {
     const { trainer } = createHarness(() => textReply('好'));
-    const profile = trainer.getProfile();
-    const prompt = profile.systemPrompt;
-    // 规则一：创建的智能体必须写清输入 / 职责与工作目标 / 交付要求，且提示词完全从 0 撰写。
-    expect(prompt).toContain('从 0');
-    expect(prompt).toContain('输入');
-    expect(prompt).toContain('职责与工作目标');
-    expect(prompt).toContain('交付要求');
-    // 规则二：改完必测 + 用户评审 + 反馈迭代下一轮。
-    expect(prompt).toContain('start_test_task');
-    expect(prompt).toContain('评审');
-    // 规则三：动 apply_changes 前先讲思路、等用户认可。
+    const prompt = trainer.getProfile().systemPrompt;
+    // 工作流正向规则。
     expect(prompt).toContain('先讲思路再动手');
     expect(prompt).toContain('认可');
-    // 能力边界：内置工具统一授予、不可删除修改。
+    expect(prompt).toContain('start_test_task');
+    expect(prompt).toContain('评审');
+    expect(prompt).toContain('get_agent');
+    // 能力边界（系统约定，正向表述）。
     expect(prompt).toContain('内置工具');
+    // 训练位状态段：无训练对象时明确提示。
+    expect(prompt).toContain('当前没有正在训练的智能体');
+    // 不再出现负向划界句与「从 0 撰写/不要沿用模板」式自我冲突禁令。
+    expect(prompt).not.toContain('不在你的职责内');
+    expect(prompt).not.toContain('不要沿用');
+    expect(prompt).not.toContain('完全从 0 撰写');
   });
 
-  it('apply_changes 从 0 创建智能体并留档，随后可更新它的全部参数', async () => {
+  it('get_agent 无参数：无训练对象时提示；create 后自动成为训练对象并返回详情', async () => {
+    let step = 0;
+    const { store, trainer } = createHarness(
+      byAgent({
+        智能体训练师: () => {
+          if (step === 0) {
+            step += 1;
+            return toolCall('get_agent', {});
+          }
+          if (step === 1) {
+            step += 1;
+            return toolCall('apply_changes', {
+              title: '新建简报助手',
+              summary: '打造每日简报智能体',
+              changes: [
+                {
+                  op: 'create_agent',
+                  agent: {
+                    name: '简报助手',
+                    description: '每天产出一份简报',
+                    prompt: '你是简报助手。输入：一句话主题。职责：围绕主题写 200 字简报，事实需可溯源。交付：markdown 文件。',
+                    temperature: 0.2,
+                  },
+                },
+              ],
+            });
+          }
+          if (step === 2) {
+            step += 1;
+            return toolCall('get_agent', {});
+          }
+          return textReply('训练对象已就绪。');
+        },
+      }),
+    );
+
+    trainer.createSession();
+    const session = store.listTrainerSessions()[0]!;
+    trainer.sendMessage(session.id, '先看当前训练对象，再创建一个');
+    await waitForIdle(trainer);
+
+    // 训练位：create_agent 后自动占用。
+    const focus = store.trainerFocusAgent();
+    expect(focus).not.toBeNull();
+    expect(focus!.name).toBe('简报助手');
+    expect(focus!.prompt).toContain('你是简报助手');
+    // 训练型智能体不参与流水线模板（prompt 非空即训练型）。
+    const stored = store.getAgentByName('简报助手')!;
+    expect(stored.prompt).not.toBeNull();
+
+    // get_agent 的返回：无对象 → 提示；有对象 → 含提示词原文。
+    const toolMessages = store
+      .listTrainerMessages(session.id)
+      .filter((message) => message.role === 'tool' && message.name === 'get_agent');
+    expect(toolMessages).toHaveLength(2);
+    expect(toolMessages[0]!.content).toContain('当前没有正在训练的智能体');
+    expect(toolMessages[1]!.content).toContain('你是简报助手');
+  });
+
+  it('create_agent 缺 prompt 被拒绝；四件套字段被剥离不落库', async () => {
     let step = 0;
     const { store, trainer } = createHarness(
       byAgent({
@@ -149,246 +228,380 @@ describe('trainer agent', () => {
           if (step === 0) {
             step += 1;
             return toolCall('apply_changes', {
-              title: '新建简报助手',
-              summary: '从 0 打造每日简报智能体',
+              title: '缺提示词',
+              summary: '缺 prompt 的创建',
               changes: [
                 {
                   op: 'create_agent',
-                  agent: {
-                    name: '简报助手',
-                    description: '每天产出一份简报',
-                    responsibilities: '输入：一句话主题。职责：围绕主题写 200 字简报。交付：markdown 文件。',
-                    temperature: 0.2,
-                  },
+                  agent: { name: '残缺智能体', responsibilities: '任务说明' },
                 },
               ],
             });
           }
-          return textReply('已创建，马上启动测试任务。');
-        },
-      }),
-    );
-    trainer.createSession();
-    const session = store.listTrainerSessions()[0]!;
-    trainer.sendMessage(session.id, '帮我做一个简报助手');
-    await waitForIdle(trainer);
-
-    const created = store.getAgentByName('简报助手');
-    expect(created).not.toBeNull();
-    expect(created!.temperature).toBe(0.2);
-    const proposals = store.listTrainerProposals(session.id);
-    expect(proposals).toHaveLength(1);
-    expect(proposals[0]!.status).toBe('applied');
-  });
-
-  it('apply_changes 拒绝流水线变更与对系统角色的变更', async () => {
-    let step = 0;
-    const { store, trainer } = createHarness(() => {
-      if (step === 0) {
-        step += 1;
-        return toolCall('apply_changes', {
-          title: '越权变更',
-          summary: '试图建流水线并修改训练师',
-          changes: [
-            { op: 'create_pipeline', pipeline: { name: 'P', description: '', nodes: [], edges: [] } },
-          ],
-        });
-      }
-      return textReply('明白了，越权了。');
-    });
-    trainer.createSession();
-    const session = store.listTrainerSessions()[0]!;
-    trainer.sendMessage(session.id, '顺手把流水线也建了吧');
-    await waitForIdle(trainer);
-
-    const toolMessage = store
-      .listTrainerMessages(session.id)
-      .find((message) => message.role === 'tool');
-    expect(toolMessage?.content).toContain('不在训练师的变更范围内');
-    // 越权变更不留生效记录。
-    expect(store.listTrainerProposals(session.id)).toHaveLength(0);
-
-    // 对系统角色的变更被拒绝（训练师自己）。
-    let replied = false;
-    let step2 = 0;
-    const harness2 = createHarness(() => {
-      if (step2 === 0) {
-        step2 += 1;
-        return toolCall('apply_changes', {
-          title: '改训练师',
-          summary: '试图修改训练师提示词',
-          changes: [{ op: 'update_agent', agentName: '智能体训练师', agent: { description: '被改' } }],
-        });
-      }
-      return textReply('知道了。');
-    });
-    harness2.trainer.createSession();
-    const session2 = harness2.store.listTrainerSessions()[0]!;
-    harness2.trainer.sendMessage(session2.id, '把你自己改了');
-    await waitForIdle(harness2.trainer);
-    const tool2 = harness2.store
-      .listTrainerMessages(session2.id)
-      .find((message) => message.role === 'tool');
-    expect(tool2?.content).toContain('是系统角色');
-    expect(harness2.store.getTrainerAgent()!.description).not.toBe('被改');
-    replied = true;
-    expect(replied).toBe(true);
-  });
-
-  it('start_test_task 把「智能体训练台」指向目标智能体并启动任务；活动任务存在时拒绝再次启动', async () => {
-    let step = 0;
-    const { store, trainer, runtime } = createHarness(
-      byAgent({
-        智能体训练师: () => {
-          if (step === 0) {
+          if (step === 1) {
             step += 1;
-            return toolCall('start_test_task', { agent: '简报助手', task: '以「秋天」为主题产出一期简报' });
+            // update_agent 夹带流水线字段：应被剥离（只允许 prompt 等训练师字段）。
+            return toolCall('apply_changes', {
+              title: '夹带四件套',
+              summary: '尝试写入流水线字段',
+              changes: [
+                {
+                  op: 'update_agent',
+                  agent: { responsibilities: '越权写入任务说明', prompt: '合法的提示词更新' },
+                },
+              ],
+            });
           }
-          return textReply('测试任务已启动，请用户评审。');
+          return textReply('完成');
         },
-        简报助手: () => toolCall('handoff', { folder: 'output' }, '简报正文：秋天是一个收获的季节。（终点交付）'),
       }),
     );
-    store.createAgent({
-      name: '简报助手',
-      description: '每天产出一份简报',
-      responsibilities: '输入：主题。职责：写简报。交付：文本。',
-    });
 
     trainer.createSession();
     const session = store.listTrainerSessions()[0]!;
-    trainer.sendMessage(session.id, '启动一轮测试');
+    trainer.sendMessage(session.id, '试试越权');
     await waitForIdle(trainer);
 
-    // 测试流水线：单节点指向目标智能体、无连线（即终点）。
-    const pipeline = store.listPipelines().find((item) => item.name === '智能体训练台');
-    expect(pipeline).toBeDefined();
-    expect(pipeline!.nodes).toHaveLength(1);
-    expect(pipeline!.nodes[0]!.agentId).toBe(store.getAgentByName('简报助手')!.id);
-    expect(pipeline!.edges).toHaveLength(0);
+    // 第一次 create 因缺 prompt 失败，没有创建任何智能体、没有训练位。
+    expect(store.getAgentByName('残缺智能体')).toBeNull();
 
-    // 任务已启动并跑到等待验收。
-    const task = store.listTasks(10)[0];
-    expect(task).toBeDefined();
-    expect(task!.pipelineName).toBe('智能体训练台');
-    await waitFor(() => store.listTasks(10)[0]?.status === 'waiting_human');
-
-    // 已有活动任务（等待验收也算）时再次启动被拒绝。
-    // 训练师每轮对话是「工具调用 + 文本收尾」两次请求：奇数次请求发起 start_test_task，偶数次收尾。
-    let step2 = 0;
-    const harness2 = createHarness(
-      byAgent({
-        智能体训练师: () => {
-          step2 += 1;
-          if (step2 % 2 === 1) {
-            return toolCall('start_test_task', { agent: '简报助手', task: '再来一轮' });
-          }
-          return textReply('好的');
-        },
-        简报助手: () => toolCall('handoff', { folder: 'output' }, '完成'),
-      }),
-    );
-    harness2.store.createAgent({ name: '简报助手', responsibilities: '写简报' });
-    const { store: store2, trainer: trainer2 } = harness2;
-    // 训练师对话里触发启动（第一轮已占住活动任务后才发第二轮）。
-    trainer2.createSession();
-    const session2 = store2.listTrainerSessions()[0]!;
-    trainer2.sendMessage(session2.id, '开始测试');
-    await waitForIdle(trainer2);
-    // 等第一轮任务进入等待验收（活动位被占）。
-    await waitFor(() => store2.listTasks(10)[0]?.status === 'waiting_human');
-    // 再发一轮：这次 start_test_task 应该报 409。
-    trainer2.sendMessage(session2.id, '再启动一轮测试');
-    await waitForIdle(trainer2);
-    const messages2 = store2.listTrainerMessages(session2.id).filter((message) => message.role === 'tool');
-    expect(messages2.some((message) => (message.content ?? '').includes('已有未结束的任务'))).toBe(true);
+    // 第二次 update：当前没有训练对象，也应失败（不能凭空更新）。
+    expect(store.trainerFocusAgent()).toBeNull();
   });
 
-  it('视野收窄：没有 list_agents；系统角色不可查；任务类工具只见测试任务', async () => {
-    let req = 0;
-    let foreignId = '';
-    let trainingId = '';
-    const { store, trainer, runtime } = createHarness(
-      byAgent({
-        智能体训练师: () => {
-          req += 1;
-          if (req === 1) {
-            return toolCall('start_test_task', { agent: '简报助手', task: '以「秋天」为主题产出一期简报' });
-          }
-          if (req === 2) return toolCall('list_tasks', {});
-          if (req === 3) return toolCall('get_task', { id: foreignId.slice(0, 8) });
-          if (req === 4) return toolCall('stop_test_task', { id: foreignId.slice(0, 8) });
-          return textReply('好的');
-        },
-        简报助手: () => toolCall('handoff', { folder: 'output' }, '简报完成'),
-        杂活员: () => toolCall('handoff', { folder: 'output' }, '杂活完成'),
-      }),
-    );
-
-    // 提示词与工具清单：没有系统级视野。
-    const profile = trainer.getProfile();
-    expect(profile.tools.some((tool) => tool.name === 'list_agents')).toBe(false);
-    for (const name of ['get_agent', 'apply_changes', 'start_test_task', 'stop_test_task', 'list_tasks', 'get_task']) {
-      expect(profile.tools.some((tool) => tool.name === name)).toBe(true);
-    }
-    expect(profile.systemPrompt).not.toContain('流水线');
-    expect(profile.systemPrompt).not.toContain('设计师');
-    expect(profile.systemPrompt).not.toContain('系统清单');
-
-    // 训练对象 + 一条外部流水线的任务（不属于训练师视野）。
-    const agent = store.createAgent({ name: '简报助手', responsibilities: '写简报' });
-    const foreignPipeline = store.createPipeline({
-      name: '其他流水线',
-      description: '',
-      nodes: [{ agentId: agent.id }],
-      edges: [],
-    });
-    const foreign = runtime.startTask({ pipelineId: foreignPipeline.id, task: '干点别的活' });
-    foreignId = foreign.id;
-    await waitFor(() => store.listTasks(200).find((task) => task.id === foreignId)?.status === 'waiting_human');
-    runtime.terminateTask(foreignId, '外部任务先终止');
-
-    trainer.createSession();
-    const session = store.listTrainerSessions()[0]!;
-    trainer.sendMessage(session.id, '开始训练');
-    await waitForIdle(trainer);
-
-    const toolMessages = store.listTrainerMessages(session.id).filter((message) => message.role === 'tool');
-    expect(toolMessages.length).toBe(4);
-    const trainingTask = store.listTasks(200).find((task) => task.pipelineName === '智能体训练台');
-    expect(trainingTask).toBeDefined();
-    trainingId = trainingTask!.id;
-    const listMessage = toolMessages[1]!.content;
-    expect(listMessage).toContain(trainingId.slice(0, 8));
-    expect(listMessage).toContain('共 1 条任务');
-    expect(listMessage).not.toContain(foreignId.slice(0, 8));
-    expect(toolMessages[2]!.content).toContain('找不到测试任务');
-    expect(toolMessages[3]!.content).toContain('找不到可终止的测试任务');
-  });
-
-  it('stop_test_task 终止进行中的测试任务', async () => {
+  it('update_agent 面向训练对象；带 name 切换训练对象；流水线成员不可接管', async () => {
     let step = 0;
     const { store, trainer } = createHarness(
       byAgent({
         智能体训练师: () => {
           if (step === 0) {
             step += 1;
-            return toolCall('start_test_task', { agent: '慢智能体', task: '慢慢做' });
+            return toolCall('apply_changes', {
+              title: '创建',
+              summary: '创建训练对象',
+              changes: [
+                { op: 'create_agent', agent: { name: '候选A', prompt: 'A 的提示词' } },
+              ],
+            });
+          }
+          if (step === 1) {
+            step += 1;
+            return toolCall('apply_changes', {
+              title: '改名训练对象',
+              summary: '更新 A',
+              changes: [
+                { op: 'update_agent', agent: { name: '候选A改', prompt: 'A 的新提示词' } },
+              ],
+            });
+          }
+          if (step === 2) {
+            step += 1;
+            // 试图接管流水线成员：应被拒绝。
+            return toolCall('apply_changes', {
+              title: '接管流水线成员',
+              summary: '切换训练对象',
+              changes: [
+                { op: 'update_agent', name: '流水线成员', agent: {} },
+              ],
+            });
+          }
+          return textReply('完成');
+        },
+      }),
+    );
+
+    // 预置：一个流水线成员智能体 + 一条引用它的流水线。
+    const member = store.createAgent({ name: '流水线成员', responsibilities: '做事' });
+    store.createPipeline({
+      name: '业务流水线',
+      nodes: [{ id: 'n1', agentId: member.id, isStart: true, x: 0, y: 0 }],
+      edges: [],
+    });
+
+    trainer.createSession();
+    const session = store.listTrainerSessions()[0]!;
+    trainer.sendMessage(session.id, '走一遍训练位切换');
+    await waitForIdle(trainer);
+
+    // 训练位跟随改名后的对象。
+    const focus = store.trainerFocusAgent();
+    expect(focus?.name).toBe('候选A改');
+    expect(focus?.prompt).toBe('A 的新提示词');
+
+    const messages = store.listTrainerMessages(session.id).filter((message) => message.role === 'tool');
+    const lastChange = messages[messages.length - 1]!.content;
+    expect(lastChange).toContain('流水线');
+  });
+
+  it('start_test_task：无参启动试运行（kind=test），提示词为训练师原文，工具含 submit 不含 handoff；流水线任务在跑不阻塞', async () => {
+    let step = 0;
+    const harness = createHarness(
+      byAgent({
+        智能体训练师: () => {
+          if (step === 0) {
+            step += 1;
+            return toolCall('apply_changes', {
+              title: '创建测试对象',
+              summary: '创建',
+              changes: [
+                {
+                  op: 'create_agent',
+                  agent: {
+                    name: '简报助手',
+                    description: '简报',
+                    prompt: '你是简报助手，围绕主题写 200 字简报，交付 markdown 文件。',
+                  },
+                },
+              ],
+            });
+          }
+          return toolCall('start_test_task', { task: '主题：多智能体协作' });
+        },
+        简报助手: submitAfterWrite('简报写好了'),
+      }),
+    );
+    const { store, runtime, trainer, provider } = harness;
+
+    // 预置一条用户流水线 + 一个成员智能体，先启动一个流水线任务占住互斥位。
+    const member = store.createAgent({ name: '流水线成员', responsibilities: '做事' });
+    store.createPipeline({
+      name: '业务流水线',
+      nodes: [{ id: 'n1', agentId: member.id, isStart: true, x: 0, y: 0 }],
+      edges: [],
+    });
+    const bizStarted = runtime.startTask({ pipelineId: store.listPipelines()[0]!.id, task: '业务任务' });
+    expect(bizStarted.status).toBe('running');
+
+    trainer.createSession();
+    const session = store.listTrainerSessions()[0]!;
+    trainer.sendMessage(session.id, '创建并测试');
+    await waitForIdle(trainer);
+
+    // 试运行任务在流水线任务占用期间也能启动（两类互斥独立）。
+    const testTask = await waitFor(
+      () => store.listTasks(50).find((task) => task.kind === 'test' && task.status !== 'aborted'),
+    );
+    expect(testTask.kind).toBe('test');
+    expect(store.findActiveTestTask()?.id).toBe(testTask.id);
+
+    // 等试运行完成：submit 交付后转 waiting_human。
+    await waitFor(() => {
+      const current = store.getTaskDetail(testTask.id);
+      return current?.status === 'waiting_human' ? current : null;
+    });
+    const detail = store.getTaskDetail(testTask.id)!;
+    expect(detail.turns).toHaveLength(1);
+    // 系统提示词 = 训练师原文 + 运行注入；不含流水线模板。
+    const systemPrompt = store.getTurnSystemPrompt(detail.turns[0]!.id) ?? '';
+    expect(systemPrompt).toContain('你是简报助手');
+    expect(systemPrompt).not.toContain('流水线的一员');
+    expect(systemPrompt).not.toContain('智能体训练台');
+    expect(systemPrompt).toContain('submit');
+    expect(systemPrompt).not.toContain('handoff 交接');
+    // 工具清单：submit 在、handoff 不在。
+    const taskRequest = provider.calls.find(
+      (call) => call.meta?.agentName === '简报助手' && call.tools?.length,
+    );
+    const toolNames = (taskRequest?.tools ?? []).map((tool) => tool.function.name);
+    expect(toolNames).toContain('submit');
+    expect(toolNames).not.toContain('handoff');
+    // 交付目录进了 final。
+    expect(detail.turns[0]!.handoffFolder?.deliveredPath).toContain('final');
+
+    // 清理：终止流水线任务，避免影响后续断言（本 harness 内即可）。
+    runtime.terminateTask(bizStarted.id, '测试收尾');
+  });
+
+  it('start_test_task 拒绝无提示词的训练对象；试运行互斥：活动试运行任务存在时拒绝再次启动', async () => {
+    let step = 0;
+    const harness = createHarness(
+      byAgent({
+        智能体训练师: () => {
+          if (step === 0) {
+            step += 1;
+            return toolCall('apply_changes', {
+              title: '创建无提示词对象',
+              summary: '创建',
+              changes: [
+                { op: 'create_agent', agent: { name: '空白智能体', prompt: '占位提示词' } },
+              ],
+            });
+          }
+          if (step === 1) {
+            step += 1;
+            return toolCall('start_test_task', { task: '第一轮' });
+          }
+          if (step === 2) {
+            step += 1;
+            // 再次启动：已有活动试运行任务，应拒绝。
+            return toolCall('start_test_task', { task: '第二轮' });
+          }
+          return toolCall('stop_test_task', { reason: '收尾' });
+        },
+        空白智能体: submitAfterWrite('好了'),
+      }),
+    );
+    const { store, trainer } = harness;
+
+    trainer.createSession();
+    const session = store.listTrainerSessions()[0]!;
+    trainer.sendMessage(session.id, '跑一遍互斥');
+    await waitForIdle(trainer);
+    // 第一轮试运行被 stop 终止：等它落到 aborted。
+    const firstTest = await waitFor(() => store.listTasks(50).find((task) => task.kind === 'test'));
+    await waitFor(() => (store.getTaskDetail(firstTest.id)?.status === 'aborted' ? true : null));
+
+    const toolMessages = store
+      .listTrainerMessages(session.id)
+      .filter((message) => message.role === 'tool' && message.name === 'start_test_task');
+    // 第二次启动被拒（409 文案进入工具结果）。
+    expect(toolMessages).toHaveLength(2);
+    expect(toolMessages[1]!.meta?.toolStatus === 'error' || toolMessages[1]!.content.includes('未结束')).toBe(true);
+  });
+
+  it('视野：无 list_agents；get_agent 不接受参数；任务类工具只见试运行任务', async () => {
+    let trainingId = '';
+    let step = 0;
+    const { store, runtime, trainer } = createHarness(
+      byAgent({
+        智能体训练师: () => {
+          step += 1;
+          if (step === 1) {
+            return toolCall('apply_changes', {
+              title: '创建',
+              summary: '创建训练对象',
+              changes: [
+                { op: 'create_agent', agent: { name: '被训对象', prompt: '被训对象的提示词' } },
+              ],
+            });
+          }
+          if (step === 2) {
+            return toolCall('start_test_task', { task: '试运行任务' });
+          }
+          if (step === 3) {
+            return toolCall('list_tasks', {});
+          }
+          // 第二轮对话（trainingId 已赋值）时才查详情；第一轮先收尾。
+          if (trainingId) {
+            return toolCall('get_task', { id: trainingId });
+          }
+          return textReply('试运行已发起，稍后看详情。');
+        },
+        被训对象: submitAfterWrite('完成'),
+      }),
+    );
+
+    // 预置一个用户的流水线任务（应不可见）。
+    const member = store.createAgent({ name: '业务成员', responsibilities: '做事' });
+    store.createPipeline({
+      name: '业务流水线',
+      nodes: [{ id: 'n1', agentId: member.id, isStart: true, x: 0, y: 0 }],
+      edges: [],
+    });
+    const biz = runtime.startTask({ pipelineId: store.listPipelines()[0]!.id, task: '业务任务' });
+    runtime.terminateTask(biz.id, '立即终止，仅留记录');
+
+    trainer.createSession();
+    const session = store.listTrainerSessions()[0]!;
+    trainer.sendMessage(session.id, '走一遍视野');
+    await waitForIdle(trainer);
+
+    const testTask = await waitFor(() => store.listTasks(50).find((task) => task.kind === 'test'));
+    trainingId = testTask.id;
+    // 补一次对话触发 get_task。
+    trainer.sendMessage(session.id, '看看任务详情');
+    await waitForIdle(trainer);
+
+    const toolMessages = store
+      .listTrainerMessages(session.id)
+      .filter((message) => message.role === 'tool');
+    const listContent = toolMessages.find((message) => message.name === 'list_tasks')?.content ?? '';
+    // 只见试运行任务，不见业务任务。
+    expect(listContent).not.toContain('业务流水线');
+    expect(listContent).toContain('试运行');
+    const getContent = toolMessages.find((message) => message.name === 'get_task')?.content ?? '';
+    // get_task 输出去流水线化：不出现「环节链路 / 交接」字样。
+    expect(getContent).not.toContain('环节链路');
+    expect(getContent).not.toContain('交接');
+    expect(getContent).toContain('运行记录');
+
+    // 工具注册表：无 list_agents。
+    const profile = trainer.getProfile();
+    const toolNames = profile.tools.map((tool) => tool.name);
+    expect(toolNames).not.toContain('list_agents');
+  });
+
+  it('stop_test_task 终止进行中的试运行任务', async () => {
+    let step = 0;
+    const { store, trainer } = createHarness(
+      byAgent({
+        智能体训练师: () => {
+          if (step === 0) {
+            step += 1;
+            return toolCall('apply_changes', {
+              title: '创建',
+              summary: '创建',
+              changes: [
+                { op: 'create_agent', agent: { name: '慢智能体', prompt: '慢慢做的智能体' } },
+              ],
+            });
+          }
+          if (step === 1) {
+            step += 1;
+            return toolCall('start_test_task', { task: '慢慢做' });
           }
           return toolCall('stop_test_task', { reason: '任务跑偏了' });
         },
-        慢智能体: () => toolCall('handoff', { folder: 'output' }, '做完了'),
+        慢智能体: submitAfterWrite('做完了'),
       }),
     );
-    store.createAgent({ name: '慢智能体', responsibilities: '做事' });
 
     trainer.createSession();
     const session = store.listTrainerSessions()[0]!;
     trainer.sendMessage(session.id, '先启动再停掉');
     await waitForIdle(trainer);
 
-    const task = store.listTasks(10)[0];
+    const task = store.listTasks(10).find((item) => item.kind === 'test');
     expect(task).toBeDefined();
     expect(task!.status).toBe('aborted');
+  });
+
+  it('apply_changes 越权：流水线类变更被拒绝', async () => {
+    const { store, trainer } = createHarness(
+      byAgent({
+        智能体训练师: () =>
+          toolCall('apply_changes', {
+            title: '越权',
+            summary: '试图创建流水线',
+            changes: [{ op: 'create_pipeline', pipeline: { name: '私搭流水线', nodes: [], edges: [] } }],
+          }),
+      }),
+    );
+
+    trainer.createSession();
+    const session = store.listTrainerSessions()[0]!;
+    trainer.sendMessage(session.id, '试试越权');
+    await waitForIdle(trainer);
+
+    expect(store.listPipelines().find((pipeline) => pipeline.name === '私搭流水线')).toBeUndefined();
+    const toolMessage = store
+      .listTrainerMessages(session.id)
+      .find((message) => message.role === 'tool' && message.name === 'apply_changes');
+    expect(toolMessage?.meta?.toolStatus).toBe('error');
+  });
+
+  it('训练位跨会话持久：新会话的系统提示词包含当前训练对象', () => {
+    const { store, trainer } = createHarness(() => textReply('好'));
+    const created = store.createAgent({
+      name: '持久对象',
+      prompt: '持久对象的提示词',
+    });
+    store.setTrainerFocusAgentId(created.id);
+
+    const prompt = trainer.getProfile().systemPrompt;
+    expect(prompt).toContain('持久对象');
+    // 删除训练对象后训练位悬空自动失效。
+    store.deleteAgent(created.id);
+    expect(store.trainerFocusAgent()).toBeNull();
   });
 });

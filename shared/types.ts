@@ -274,6 +274,12 @@ export interface Agent {
   deliverable: string;
   /** 工作指南：本岗位的工作方法与思考方式，留空则不出现在提示词中。 */
   guide: string;
+  /**
+   * 训练型智能体的完整系统提示词（训练师撰写）。
+   * 非空 = 训练型：试运行任务直接使用这段提示词，且不能加入流水线；
+   * null = 流水线型：由系统按四件套模板组装提示词。
+   */
+  prompt: string | null;
   model: string | null;
   temperature: number | null;
   tools: AgentToolsConfig;
@@ -298,6 +304,8 @@ export interface AgentInput {
   responsibilities?: string;
   deliverable?: string;
   guide?: string;
+  /** 训练型智能体的完整提示词；传入非空值即训练型（不参与流水线模板组装）。 */
+  prompt?: string | null;
   model?: string | null;
   temperature?: number | null;
   tools?: Partial<AgentToolsConfig>;
@@ -443,10 +451,18 @@ export interface Turn {
   error: string | null;
 }
 
+/**
+ * 任务形态：
+ * - pipeline：流水线任务，按图流转、环节间 handoff 交接；
+ * - test：试运行任务（训练师发起），单智能体、无流转，submit 提交交付。
+ */
+export type TaskKind = 'pipeline' | 'test';
+
 export interface TaskSummary {
   id: string;
   task: string;
   status: TaskStatus;
+  kind: TaskKind;
   startAgentId: string;
   /** 任务所属流水线（历史任务可能为空）。 */
   pipelineId: string | null;
@@ -885,7 +901,10 @@ export interface RealtimeEvent {
 
 export interface StatusSnapshot {
   version: string;
+  /** 当前活动的流水线任务（kind='pipeline'）；与试运行任务互不影响。 */
   activeTask: TaskSummary | null;
+  /** 当前活动的试运行任务（kind='test'，训练师发起）。 */
+  activeTestTask: TaskSummary | null;
   busyAgents: { agentId: string; agentName: string; turnId: string }[];
   openFeedback: number;
   /** 流水线设计师是否正在生成回复（由 system 路由合成；Runtime 自身不感知设计师）。 */

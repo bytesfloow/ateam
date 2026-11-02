@@ -51,6 +51,8 @@ interface Draft {
   deliverable: string;
   /** 工作指南：岗位工作方法与思考方式。 */
   guide: string;
+  /** 训练型智能体的完整系统提示词（由训练师撰写）；仅编辑训练型智能体时使用。 */
+  prompt: string;
   model: string;
   temperature: string;
   toolsBuiltin: string[];
@@ -66,6 +68,7 @@ function newDraft(index: number): Draft {
     responsibilities: '',
     deliverable: '',
     guide: '',
+    prompt: '',
     model: '',
     temperature: '',
     toolsBuiltin: [...DEFAULT_BUILTINS],
@@ -82,6 +85,7 @@ function agentToDraft(agent: Agent): Draft {
     responsibilities: agent.responsibilities,
     deliverable: agent.deliverable,
     guide: agent.guide,
+    prompt: agent.prompt ?? '',
     model: agent.model ?? '',
     temperature: agent.temperature === null ? '' : String(agent.temperature),
     toolsBuiltin: agent.tools.builtin,
@@ -139,12 +143,19 @@ export function AgentsPage() {
       const temperature =
         draft.temperature.trim() === '' ? null : Math.min(2, Math.max(0, Number(draft.temperature)));
       if (temperature !== null && !Number.isFinite(temperature)) throw new Error('温度必须是 0-2 之间的数字');
+      // 训练型智能体（完整提示词形态，由训练师创建）：只编辑 prompt 与通用配置；
+      // 流水线型智能体：编辑四件套，不传 prompt（不改变形态）。
+      const isTrained = Boolean(editingAgent?.prompt);
       const payload: AgentInput = {
         name: draft.name.trim(),
         description: draft.description.trim(),
-        responsibilities: draft.responsibilities,
-        deliverable: draft.deliverable,
-        guide: draft.guide,
+        ...(isTrained
+          ? { prompt: draft.prompt }
+          : {
+              responsibilities: draft.responsibilities,
+              deliverable: draft.deliverable,
+              guide: draft.guide,
+            }),
         model: draft.model.trim() || null,
         temperature,
         tools: {
@@ -155,7 +166,8 @@ export function AgentsPage() {
         accent: draft.accent,
       };
       if (!payload.name) throw new Error('请填写智能体名称');
-      if (!draft.responsibilities.trim()) throw new Error('请填写任务说明');
+      if (isTrained && !draft.prompt.trim()) throw new Error('请填写完整系统提示词');
+      if (!isTrained && !draft.responsibilities.trim()) throw new Error('请填写任务说明');
       if (editingAgent) return api.updateAgent(editingAgent.id, payload);
       return api.createAgent(payload);
     },
@@ -182,8 +194,19 @@ export function AgentsPage() {
   });
 
   const previewMutation = useMutation({
-    mutationFn: () =>
-      api.previewAgentPrompt({
+    mutationFn: () => {
+      // 训练型智能体预览 prompt 原文 + 最小运行注入；流水线型预览四件套模板组装结果。
+      if (editingAgent?.prompt) {
+        return api.previewAgentTestPrompt({
+          agentId: editingAgent.id,
+          name: draft.name.trim() || '（未命名智能体）',
+          description: draft.description.trim(),
+          prompt: draft.prompt,
+          tools: { builtin: draft.toolsBuiltin, custom: draft.toolsCustom },
+          skillIds: draft.skillIds,
+        });
+      }
+      return api.previewAgentPrompt({
         name: draft.name.trim() || '（未命名智能体）',
         description: draft.description.trim(),
         responsibilities: draft.responsibilities,
@@ -191,7 +214,8 @@ export function AgentsPage() {
         guide: draft.guide,
         tools: { builtin: draft.toolsBuiltin, custom: draft.toolsCustom },
         skillIds: draft.skillIds,
-      }),
+      });
+    },
     onSuccess: (data) => setPreviewText(data.prompt),
     onError: (error: Error) => toast.error(error.message),
   });
@@ -268,6 +292,7 @@ export function AgentsPage() {
 
                 <div className="agent-badges">
                   {isDesigner ? <Badge tone="info">系统内置 · 设计师</Badge> : null}
+                  {agent.prompt ? <Badge tone="info">训练型</Badge> : null}
                   {busy ? <Badge tone="accent" dot>运行中</Badge> : <Badge tone="success">空闲</Badge>}
                   {agent.model ? <Badge tone="accent">{agent.model}</Badge> : null}
                   <Badge>工具 {agent.tools.builtin.length + agent.tools.custom.length}</Badge>
@@ -418,49 +443,67 @@ export function AgentsPage() {
               <div>
                 <h3>系统提示词</h3>
                 <p>
-                  这是智能体的「岗位说明书」，由下面的字段拼装而成。名称、流水线位置、技能与工具列表、任务工作区路径由系统按实际配置自动注入，无需手写。
+                  {editingAgent?.prompt
+                    ? '这是智能体训练师撰写的完整系统提示词。试运行任务直接使用它；工作区路径、时间、工具与技能清单由系统在运行时附加。'
+                    : '这是智能体的「岗位说明书」，由下面的字段拼装而成。名称、流水线位置、技能与工具列表、任务工作区路径由系统按实际配置自动注入，无需手写。'}
                 </p>
               </div>
             </div>
 
-            <Field
-              label="任务说明"
-              hint="必填。写清本环节要做哪些事、做到什么程度（验收标准）；系统会把它作为「本环节任务」章节注入提示词。"
-            >
-              <textarea
-                className="textarea"
-                value={draft.responsibilities}
-                rows={4}
-                placeholder={'例如：\n把用户的任务拆解为目标、计划与验收标准，产出可直接执行的计划文档。\n1. 通读任务与外部输入，明确目标与范围。\n2. 产出分步执行计划，每步写清输入、产出与完成标准。'}
-                onChange={(event) => setDraft({ ...draft, responsibilities: event.target.value })}
-              />
-            </Field>
+            {editingAgent?.prompt ? (
+              <Field
+                label="完整系统提示词"
+                hint="由训练师撰写，可直接修改；这类智能体不参与流水线，只能通过试运行任务使用。"
+              >
+                <textarea
+                  className="textarea textarea--code"
+                  value={draft.prompt}
+                  rows={22}
+                  onChange={(event) => setDraft({ ...draft, prompt: event.target.value })}
+                />
+              </Field>
+            ) : (
+              <>
+                <Field
+                  label="任务说明"
+                  hint="必填。写清本环节要做哪些事、做到什么程度（验收标准）；系统会把它作为「本环节任务」章节注入提示词。"
+                >
+                  <textarea
+                    className="textarea"
+                    value={draft.responsibilities}
+                    rows={4}
+                    placeholder={'例如：\n把用户的任务拆解为目标、计划与验收标准，产出可直接执行的计划文档。\n1. 通读任务与外部输入，明确目标与范围。\n2. 产出分步执行计划，每步写清输入、产出与完成标准。'}
+                    onChange={(event) => setDraft({ ...draft, responsibilities: event.target.value })}
+                  />
+                </Field>
 
-            <Field
-              label="交付要求"
-              hint="这个岗位需要交付什么、以什么形式（文档 / 表格 / 代码等）。会作为「交付要求」章节自动注入系统提示词；留空则使用默认说明。"
-            >
-              <textarea
-                className="textarea"
-                value={draft.deliverable}
-                rows={5}
-                placeholder="例如：一份含来源链接的新闻清单（Markdown 文档），以及全部配图的本地副本；写清交付物的形式与验收要点。"
-                onChange={(event) => setDraft({ ...draft, deliverable: event.target.value })}
-              />
-            </Field>
+                <Field
+                  label="交付要求"
+                  hint="这个岗位需要交付什么、以什么形式（文档 / 表格 / 代码等）。会作为「交付要求」章节自动注入系统提示词；留空则使用默认说明。"
+                >
+                  <textarea
+                    className="textarea"
+                    value={draft.deliverable}
+                    rows={5}
+                    placeholder="例如：一份含来源链接的新闻清单（Markdown 文档），以及全部配图的本地副本；写清交付物的形式与验收要点。"
+                    onChange={(event) => setDraft({ ...draft, deliverable: event.target.value })}
+                  />
+                </Field>
 
-            <Field
-              label="工作指南"
-              hint="这个岗位如何思考与推进工作：方法、边界、遇到问题时的处理方式。交付规则由系统统一约定并写入工作规则，无需在此填写。"
-            >
-              <textarea
-                className="textarea"
-                value={draft.guide}
-                rows={10}
-                placeholder="例如：先读 input 目录中的需求文档，再列检查清单……"
-                onChange={(event) => setDraft({ ...draft, guide: event.target.value })}
-              />
-            </Field>
+                <Field
+                  label="工作指南"
+                  hint="这个岗位如何思考与推进工作：方法、边界、遇到问题时的处理方式。交付规则由系统统一约定并写入工作规则，无需在此填写。"
+                >
+                  <textarea
+                    className="textarea"
+                    value={draft.guide}
+                    rows={10}
+                    placeholder="例如：先读 input 目录中的需求文档，再列检查清单……"
+                    onChange={(event) => setDraft({ ...draft, guide: event.target.value })}
+                  />
+                </Field>
+              </>
+            )}
 
             <div className="button-row">
               <button

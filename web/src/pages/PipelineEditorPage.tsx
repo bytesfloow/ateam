@@ -299,9 +299,10 @@ function PipelineEditor() {
 
   const dirty = JSON.stringify(draft) !== baseline;
   const placedAgentIds = new Set(draft.nodes.map((node) => node.agentId));
-  // 设计师是系统管理员，不参与任务交付，不能作为流水线节点。
+  // 设计师是系统管理员，不参与任务交付；训练型智能体由训练师独立训练（完整提示词形态）。
+  // 两者都不能作为流水线节点。
   const availableAgents = agents.filter(
-    (agent) => agent.slug !== DESIGNER_SLUG && !placedAgentIds.has(agent.id),
+    (agent) => agent.slug !== DESIGNER_SLUG && !agent.prompt && !placedAgentIds.has(agent.id),
   );
 
   function addAgentToCanvas(agent: Agent, position?: { x: number; y: number }) {

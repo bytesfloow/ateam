@@ -37,7 +37,7 @@ import {
   type LlmToolCall,
 } from './llm';
 import type { Store } from './store';
-import { assembleSystemPrompt, type PromptPipelineContext } from './prompt';
+import { assembleSystemPrompt, assembleTestSystemPrompt, type PromptPipelineContext } from './prompt';
 import { resolveTools, type ResolvedTool, type ToolContext } from './tools';
 
 const nowIso = (): string => new Date().toISOString();
@@ -327,8 +327,10 @@ interface LoopParams {
   turnSeq: number;
   task: string;
   systemPrompt: string;
-  pipeline: Pipeline;
-  node: PipelineNode;
+  /** 任务类型：test（试运行）时 pipeline / node 为 null。 */
+  taskKind: 'pipeline' | 'test';
+  pipeline: Pipeline | null;
+  node: PipelineNode | null;
   outgoing: PipelineEdge[];
   generation: number;
   signal?: AbortSignal;
@@ -376,6 +378,7 @@ export class Runtime {
 
   startTask(input: TaskStartInput): TaskDetail {
     if (this.resetting) throw new AppError(409, '系统正在重置，请稍后');
+    // 两类任务各自互斥：流水线任务只和流水线任务排队，试运行任务（训练师）独立计数。
     const active = this.store.findActiveTask();
     if (active) {
       const state =
@@ -408,10 +411,38 @@ export class Runtime {
   }
 
   /**
+   * 试运行任务（训练师发起）：单智能体、不走流水线。
+   * 系统提示词 = 智能体的 prompt 原文 + 最小运行注入；完成靠 submit 提交，交付给用户评审。
+   */
+  startTestTask(input: { agentId: string; task: string }): TaskDetail {
+    if (this.resetting) throw new AppError(409, '系统正在重置，请稍后');
+    const agent = this.store.getAgent(input.agentId);
+    if (!agent) throw new AppError(404, `被测智能体不存在（${input.agentId}）`);
+    if (!agent.prompt) {
+      throw new AppError(409, `「${agent.name}」没有完整提示词（prompt），不能试运行。请先为它撰写提示词`);
+    }
+    const active = this.store.findActiveTestTask();
+    if (active) {
+      const state =
+        active.status === 'paused' ? '已暂停' : active.status === 'waiting_human' ? '等待用户验收' : '执行中';
+      throw new AppError(409, `已有未结束的试运行任务（${state}），请先在任务页处理（验收或终止）`);
+    }
+    const taskText = String(input.task ?? '').trim();
+    const created = this.store.createTask({ task: taskText, kind: 'test', agent, pipeline: null, node: null });
+    this.store.ensureTaskWorkspace(created.taskId);
+    this.store.prepareAgentTaskWorkspace(created.taskId, agent.slug);
+    this.events.publish({ type: 'task.created', taskId: created.taskId });
+    this.events.publish({ type: 'task.updated', taskId: created.taskId });
+    void this.executeTurn(created.turnId, this.generation);
+    return this.store.getTaskDetail(created.taskId)!;
+  }
+
+  /**
    * 暂停（或失败）的任务：停在当前节点重跑。
    *
    * 不修改已有回合，追加新的一个环节由同一智能体重做；输入按「进入本节点的连线」重新渲染
    * （上一环节 = 最近一次成功交接），失败的环节产出的半成品不作为输入。
+   * 试运行任务同理：同一智能体重跑，输入 = 任务原文 + 用户补充指示。
    */
   retryTask(taskId: string, input: { note?: string } = {}): TaskDetail {
     if (this.resetting) throw new AppError(409, '系统正在重置，请稍后');
@@ -420,28 +451,45 @@ export class Runtime {
     if (task.status !== 'paused' && task.status !== 'failed') {
       throw new AppError(409, '只有暂停或失败的任务可以重试');
     }
-    const active = this.store.findActiveTask();
+    const isTest = task.kind === 'test';
+    const active = isTest ? this.store.findActiveTestTask() : this.store.findActiveTask();
     if (active && active.id !== taskId) {
-      throw new AppError(409, '已有未结束的任务，请先处理或终止它');
+      throw new AppError(409, `已有未结束的${isTest ? '试运行' : ''}任务，请先处理或终止它`);
     }
+
+    if (isTest) {
+      const agent = this.store.getAgent(task.startAgentId);
+      if (!agent) throw new AppError(409, '被测智能体已被删除，无法重试');
+      this.store.prepareAgentTaskWorkspace(taskId, agent.slug);
+      const created = this.store.createTurn(taskId, agent, null);
+      const inputText = [task.task, input.note?.trim() ? `【用户的补充指示】\n${input.note.trim()}` : '']
+        .filter(Boolean)
+        .join('\n\n');
+      this.store.updateTurn(created.turnId, { input: inputText });
+      this.store.updateTask(taskId, { status: 'running', error: null, finishedAt: null });
+      this.events.publish({ type: 'task.updated', taskId });
+      void this.executeTurn(created.turnId, this.generation);
+      return this.store.getTaskDetail(taskId)!;
+    }
+
     const pipeline = task.pipeline;
     if (!pipeline) throw new AppError(409, '任务缺少流水线快照，无法重试');
     const node = task.currentNodeId
       ? findNode(pipeline, task.currentNodeId)
       : null;
     if (!node) throw new AppError(409, '找不到任务当前所处的节点，无法重试');
-    const agent = this.store.getAgent(node.agentId);
-    if (!agent) throw new AppError(409, '当前节点的智能体已被删除，无法重试');
+    const nodeAgent = this.store.getAgent(node.agentId);
+    if (!nodeAgent) throw new AppError(409, '当前节点的智能体已被删除，无法重试');
 
     const previous = [...task.turns].reverse().find((turn) => turn.status === 'completed') ?? null;
-    this.store.prepareAgentTaskWorkspace(taskId, agent.slug);
-    const created = this.store.createTurn(taskId, agent, node);
+    this.store.prepareAgentTaskWorkspace(taskId, nodeAgent.slug);
+    const created = this.store.createTurn(taskId, nodeAgent, node);
     const inputText = buildTurnInput({
       taskText: task.task,
       pipeline,
       node,
       previous,
-      inputFiles: listInputFiles(this.store, taskId, agent.slug),
+      inputFiles: listInputFiles(this.store, taskId, nodeAgent.slug),
       note: input.note,
     });
     this.store.updateTurn(created.turnId, { input: inputText });
@@ -490,9 +538,11 @@ export class Runtime {
 
   getStatus(): StatusSnapshot {
     const active = this.store.findActiveTask();
+    const activeTestTask = this.store.findActiveTestTask();
     return {
       version: VERSION,
       activeTask: active,
+      activeTestTask,
       busyAgents: [...this.busy.entries()].map(([agentId, value]) => ({
         agentId,
         agentName: value.agentName,
@@ -547,10 +597,11 @@ export class Runtime {
       taskId = turn.taskId;
       const task = this.store.getTaskDetail(turn.taskId);
       if (!task || task.status !== 'running') return;
+      const isTest = task.kind === 'test';
       const pipeline = task.pipeline;
       const node =
         pipeline && turn.nodeId ? findNode(pipeline, turn.nodeId) : null;
-      if (!pipeline || !node) {
+      if (!isTest && (!pipeline || !node)) {
         this.store.updateTurn(turnId, {
           status: 'failed',
           error: '任务缺少流水线节点信息',
@@ -568,7 +619,7 @@ export class Runtime {
           finishedAt: nowIso(),
         });
         this.events.publish({ type: 'turn.updated', taskId: turn.taskId, turnId });
-        this.pauseTask(turn.taskId, '本节点的智能体已被删除，请调整流水线后重试');
+        this.pauseTask(turn.taskId, isTest ? '被测智能体已被删除，请终止任务' : '本节点的智能体已被删除，请调整流水线后重试');
         return;
       }
 
@@ -576,19 +627,36 @@ export class Runtime {
       const previous =
         [...task.turns].reverse().find((item) => item.seq < turn.seq && item.status === 'completed') ?? null;
       this.store.prepareAgentTaskWorkspace(turn.taskId, agent.slug);
-      const input =
-        turn.input ||
-        buildTurnInput({
-          taskText: task.task,
-          pipeline,
-          node,
-          previous,
-          inputFiles: listInputFiles(this.store, task.id, agent.slug),
+      const workspaceDir = this.store.agentTaskWorkspaceDir(turn.taskId, agent.slug);
+      const inputFiles = listInputFiles(this.store, task.id, agent.slug);
+      let systemPrompt: string;
+      let input: string;
+      if (isTest) {
+        // 试运行任务：提示词 = 训练师撰写的原文 + 最小运行注入；输入 = 任务原文 + 输入文件。
+        systemPrompt = assembleTestSystemPrompt(this.store, agent, {
+          taskWorkspace: workspaceDir,
+          inboxDir: this.store.agentTaskUserInputDir(task.id, agent.slug),
         });
-      const upstreamNames = incomingEdges(pipeline, node.id)
-        .map((edge) => this.store.getAgent(findNode(pipeline, edge.from)?.agentId ?? '')?.name ?? '')
-        .filter(Boolean);
-      const systemPrompt = buildSystemPrompt(this.store, agent, task, pipeline, node, upstreamNames);
+        input =
+          turn.input ||
+          [task.task, inputFiles.length > 0 ? `【输入文件】\n${inputFiles.map((file) => `- inbox/user/${file}`).join('\n')}` : '']
+            .filter(Boolean)
+            .join('\n\n');
+      } else {
+        input =
+          turn.input ||
+          buildTurnInput({
+            taskText: task.task,
+            pipeline: pipeline!,
+            node: node!,
+            previous,
+            inputFiles,
+          });
+        const upstreamNames = incomingEdges(pipeline!, node!.id)
+          .map((edge) => this.store.getAgent(findNode(pipeline!, edge.from)?.agentId ?? '')?.name ?? '')
+          .filter(Boolean);
+        systemPrompt = buildSystemPrompt(this.store, agent, task, pipeline!, node!, upstreamNames);
+      }
       // 提示词落库留档：详情页展示的是本环节实际下发给模型的完整内容，事后改智能体不影响历史记录。
       this.store.updateTurn(turnId, {
         input,
@@ -616,7 +684,7 @@ export class Runtime {
         turnId,
       });
 
-      const outgoing = outgoingEdges(pipeline, node.id);
+      const outgoing = pipeline && node ? outgoingEdges(pipeline, node.id) : [];
       const loop = this.runAgentLoop({
         agent,
         taskId: turn.taskId,
@@ -625,6 +693,7 @@ export class Runtime {
         turnSeq: turn.seq,
         task: task.task,
         systemPrompt,
+        taskKind: isTest ? 'test' : 'pipeline',
         pipeline,
         node,
         outgoing,
@@ -660,7 +729,7 @@ export class Runtime {
 
       const handoff = result.handoff;
       if (!handoff) {
-        const message = '本环节没有产生有效交接';
+        const message = isTest ? '智能体没有提交交付目录（需要调用 submit）' : '本环节没有产生有效交接';
         this.store.updateTurn(turnId, { status: 'failed', error: message, finishedAt: nowIso() });
         this.events.publish({ type: 'turn.updated', taskId: turn.taskId, turnId });
         this.pauseTask(turn.taskId, message);
@@ -691,7 +760,8 @@ export class Runtime {
         return;
       }
 
-      const nextNode = handoff.target.nodeId ? findNode(pipeline, handoff.target.nodeId) : null;
+      // 试运行任务没有下游环节：submit 的目标固定是用户（human），上面已转 waiting_human。
+      const nextNode = handoff.target.nodeId ? findNode(pipeline!, handoff.target.nodeId) : null;
       if (!nextNode) {
         this.pauseTask(turn.taskId, '交接目标节点不在流水线中，任务已停在当前节点');
         return;
@@ -864,7 +934,7 @@ export class Runtime {
       return { status: 'failed', finalText: '', handoff: null, error: errorMessage(error), iterations: 0 };
     }
 
-    const resolvedTools = resolveTools(this.store, agent);
+    const resolvedTools = resolveTools(this.store, agent, { taskKind: params.taskKind });
     const toolMap = new Map<string, ResolvedTool>(resolvedTools.map((tool) => [tool.spec.function.name, tool]));
     const toolSpecs = resolvedTools.map((tool) => tool.spec);
     const stored = this.store.listMessages(params.conversationId);
@@ -895,6 +965,7 @@ export class Runtime {
       signal,
       settings,
       systemPrompt: params.systemPrompt,
+      taskKind: params.taskKind,
       pipeline: params.pipeline,
       node: params.node,
       outgoing: params.outgoing,
@@ -968,7 +1039,7 @@ export class Runtime {
               turnId: params.turnId,
               turnSeq: params.turnSeq,
               nextAgentNames: params.outgoing.map(
-                (edge) => this.store.getAgent(findNode(params.pipeline, edge.to)?.agentId ?? '')?.name ?? '（已删除）',
+                (edge) => this.store.getAgent(findNode(params.pipeline!, edge.to)?.agentId ?? '')?.name ?? '（已删除）',
               ),
               terminal: params.outgoing.length === 0,
               iteration,

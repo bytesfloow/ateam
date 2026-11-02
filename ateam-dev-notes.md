@@ -33,3 +33,34 @@
   「视野只有这一个智能体和它的测试任务」，全文无「流水线」「设计师」字样；
   服务端防护（apply_changes 拒流水线与系统角色、start_test_task 活动任务互斥）原样保留。
 - 测试：新增视野收窄专项（profile 无 list_agents、提示词负断言、外部任务三工具全不可见），157 全过。
+
+## 2026-11-02 训练师系统提示词与试运行任务重构（schema v13）
+
+- 用户三点反馈：①负向划界句多余（不给视野靠不提供，不是告知后说别看）；②训练师训练的
+  智能体与流水线智能体是两种形态；③「提示词从 0 写不要用模板」自我冲突（不给模板靠不存在）。
+- 两种智能体形态：Agent.prompt 非空 = 训练型（试运行直接用 prompt 原文+最小运行注入；
+  不能进流水线，designer 校验/执行 + 流水线编辑器双重拦截）；null = 流水线型（四件套模板照旧）。
+  训练师 apply_changes 的 agent schema 只暴露 name/description/prompt/model/temperature/tools/skillIds
+  （四件套字段进了 schema 也会被 trainerAgentInput 剥离），模板对训练师彻底不存在。
+- 训练位（trainer.focusAgentId，settings 持久化）：一次只训练一个智能体，跨会话不失忆；
+  create 自动占用，update 带 name 可切换（流水线成员不可接管），delete 清空；
+  get_agent 改无参 = 查训练位详情，无对象返回明确提示；悬空引用自动失效。
+- 试运行任务独立（TaskKind）：不再借「智能体训练台」流水线执行——迁移删除该流水线，
+  存量任务按 pipeline_name 刷 kind='test'。startTestTask：无流水线/无节点，单 turn；
+  系统提示词 = prompt 原文 + 工作区/时间/工具/技能/submit 说明（prompt.ts assembleTestSystemPrompt）；
+  完成靠 submit 工具（deliverToFinal 交用户评审，替代 handoff）；resolveTools 按 taskKind 注入
+  handoff|submit，chat 运行时两者都过滤。两类任务互斥独立（findActiveTask 只查 pipeline，
+  新增 findActiveTestTask；StatusSnapshot 加 activeTestTask）。
+- 训练师提示词重写：删「视野只有…不在职责内」「从 0 撰写不要沿用模板」两段废话；
+  保留正向内容：身份、训练位状态（动态注入）、工作规则（先讲思路/改完必测/不代验收）、
+  能力边界（内置工具统一授予/运行机制系统处理）、试运行工具用法、工作方式。
+- 前端：AgentsPage 训练型徽章 + prompt 编辑分支 + preview-test-prompt 预览；
+  TasksPage/TaskDetail 试运行标识与文案分支；PipelineEditor 过滤训练型；任务页活动任务
+  优先流水线、回落试运行。
+- 测试：trainer.test.ts 重写为 11 用例（训练位全生命周期、四件套剥离、越权拒绝、
+  互斥独立、视野、stop、跨会话持久）；db.test.ts v12→v13 迁移用例；162 全过。
+  本地 v12 库实测迁移：训练台删除、kind 刷写、activeTask/activeTestTask 分离正确。
+- 教训：① Turn 视图不带 systemPrompt（mapTurn 不映射），详情要用 getTurnSystemPrompt(turnId)；
+  ② mock 被训智能体必须先 write 再 submit（submit 目录不存在=ToolError，模型无限重试）；
+  ③ validateChangeOps 的 update/delete_agent 分支强制引用字段，训练师 op 要先 normalizeTrainerChange
+  补训练位引用再走公共校验。

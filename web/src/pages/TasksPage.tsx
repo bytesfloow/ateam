@@ -51,7 +51,8 @@ export function TasksPage() {
   const pipelinesQuery = useQuery({ queryKey: ['pipelines'], queryFn: api.listPipelines });
   const agentsQuery = useQuery({ queryKey: ['agents'], queryFn: api.listAgents });
   const statusQuery = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 5000 });
-  const activeTaskId = statusQuery.data?.status.activeTask?.id ?? null;
+  // 活动任务优先显示流水线任务；没有流水线任务时显示试运行任务（训练师发起）。
+  const activeTaskId = statusQuery.data?.status.activeTask?.id ?? statusQuery.data?.status.activeTestTask?.id ?? null;
   const taskQuery = useQuery({
     queryKey: ['task', activeTaskId],
     queryFn: () => api.getTask(activeTaskId!),
@@ -183,12 +184,20 @@ export function TasksPage() {
               </div>
               <h3 className="run-task">{activeTask.task}</h3>
               <div className="run-progress">
-                <span>
-                  <Workflow size={13} className="inline-icon" />
-                  {activeTask.pipelineName || '流水线'} · 共 {activeTask.pipelineTotal || 0} 个节点
-                  {activeTask.currentAgentName ? ` · 当前 ${activeTask.currentAgentName}` : ''}
-                  {activeTask.status === 'waiting_human' ? ' · 等待你验收' : ''}
-                </span>
+                {activeTask.kind === 'test' ? (
+                  <span>
+                    <Bot size={13} className="inline-icon" />
+                    试运行 · {activeTask.currentAgentName || activeTask.pipelineName}
+                    {activeTask.status === 'waiting_human' ? ' · 等待你验收' : ''}
+                  </span>
+                ) : (
+                  <span>
+                    <Workflow size={13} className="inline-icon" />
+                    {activeTask.pipelineName || '流水线'} · 共 {activeTask.pipelineTotal || 0} 个节点
+                    {activeTask.currentAgentName ? ` · 当前 ${activeTask.currentAgentName}` : ''}
+                    {activeTask.status === 'waiting_human' ? ' · 等待你验收' : ''}
+                  </span>
+                )}
               </div>
             </div>
             <div className="run-actions">
@@ -322,26 +331,39 @@ export function TasksPage() {
 
 function TaskRow({ task }: { task: TaskSummary }) {
   const meta = TASK_STATUS_META[task.status];
+  const isTest = task.kind === 'test';
   return (
     <Link className="run-row" to={`/tasks/${task.id}`}>
       <span className={cn('run-row-bar', `run-row-bar--${task.status}`)} />
       <div className="run-row-main">
         <div className="run-row-title">
           <Badge tone={meta.tone}>{meta.label}</Badge>
+          {isTest ? <Badge tone="info">试运行</Badge> : null}
           <span>{truncate(task.task, 90)}</span>
         </div>
         <div className="run-row-meta">
           <span>{formatDateTime(task.createdAt)}</span>
           <span className="dot-sep">·</span>
-          <span>
-            <Workflow size={12} className="inline-icon" />
-            {task.pipelineName || '流水线'} · {task.pipelineTotal || 0} 个节点
-          </span>
-          <span className="dot-sep">·</span>
-          <span>{task.turnCount} 个环节</span>
+          {isTest ? (
+            <span>
+              <Bot size={12} className="inline-icon" />
+              {task.currentAgentName || task.pipelineName}
+            </span>
+          ) : (
+            <span>
+              <Workflow size={12} className="inline-icon" />
+              {task.pipelineName || '流水线'} · {task.pipelineTotal || 0} 个节点
+            </span>
+          )}
+          {!isTest ? (
+            <>
+              <span className="dot-sep">·</span>
+              <span>{task.turnCount} 个环节</span>
+            </>
+          ) : null}
           <span className="dot-sep">·</span>
           <span>{formatDuration(task.createdAt, task.finishedAt)}</span>
-          {task.currentAgentName ? (
+          {task.currentAgentName && isTest ? null : task.currentAgentName ? (
             <>
               <span className="dot-sep">·</span>
               <span>

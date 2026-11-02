@@ -125,6 +125,8 @@ export const api = {
   createAgent: (input: AgentInput) => request<{ agent: Agent }>('/api/agents', json('POST', input)),
   previewAgentPrompt: (input: Partial<AgentInput>) =>
     request<{ prompt: string }>('/api/agents/preview-prompt', json('POST', input)),
+  previewAgentTestPrompt: (input: Partial<AgentInput> & { agentId?: string }) =>
+    request<{ prompt: string }>('/api/agents/preview-test-prompt', json('POST', input)),
   updateAgent: (id: string, input: Partial<AgentInput>) =>
     request<{ agent: Agent }>(`/api/agents/${encodeURIComponent(id)}`, json('PATCH', input)),
   deleteAgent: (id: string) => request<void>(`/api/agents/${encodeURIComponent(id)}`, json('DELETE')),

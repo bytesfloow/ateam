@@ -89,7 +89,7 @@ const DESIGNER_DEFAULT_DEFINITION: AgentInput = {
  * 智能体负载里的技能与自定义工具引用兼容「名称或 id」：
  * 应用变更前统一解析成 id（store 层按 id 校验存在性）。
  */
-function normalizeAgentInput<T extends Partial<AgentInput>>(store: Store, input: T): T {
+export function normalizeAgentInput<T extends Partial<AgentInput>>(store: Store, input: T): T {
   const skillIds = Array.isArray(input.skillIds)
     ? input.skillIds.map((ref) => {
         if (typeof ref !== 'string') return ref;
@@ -302,6 +302,10 @@ function resolvePipelineInput(store: Store, input: PipelineInput): PipelineInput
       if (!agent) {
         throw new AppError(404, `流水线第 ${index + 1} 个节点找不到智能体「${ref || '未指定'}」`);
       }
+      // 训练型智能体（训练师独立训练，用完整提示词而非流水线模板）不能进流水线。
+      if (agent.prompt) {
+        throw new AppError(409, `智能体「${agent.name}」由智能体训练师独立训练，不能加入流水线`);
+      }
       return { ...node, agentId: agent.id };
     }),
   };
@@ -397,6 +401,7 @@ export const AGENT_FIELDS_PROPERTIES: Record<string, unknown> = {
   responsibilities: { type: 'string', description: '任务说明：要做哪些事、做到什么程度' },
   deliverable: { type: 'string', description: '交付要求：交付什么、以什么形式；留空输出默认说明' },
   guide: { type: 'string', description: '工作指南：工作方法与思考方式' },
+  prompt: { type: ['string', 'null'], description: '训练师训练的智能体专用：完整系统提示词；流水线智能体不使用该字段' },
   model: { type: ['string', 'null'], description: '覆盖模型名；留空用全局默认' },
   temperature: { type: ['number', 'null'], description: '覆盖温度（0-2）' },
   tools: {
@@ -1194,10 +1199,18 @@ function assertPipelineNodesResolvable(
   const nodes = Array.isArray(input?.nodes) ? input!.nodes : [];
   for (const [nodeIndex, node] of nodes.entries()) {
     const ref = String(node?.agentId ?? '').trim();
-    assertRefResolvable(store, overlay, `${label}: 流水线第 ${nodeIndex + 1} 个节点`, 'agent', '智能体', {
+    const nodeLabel = `${label}: 流水线第 ${nodeIndex + 1} 个节点`;
+    const hit = assertRefResolvable(store, overlay, nodeLabel, 'agent', '智能体', {
       id: ref,
       name: ref,
     });
+    // 训练型智能体由训练师独立训练（完整提示词形态），不参与流水线编排。
+    if (hit.status === 'store') {
+      const agent = hit.storeObject as Agent | undefined;
+      if (agent?.prompt) {
+        throw new AppError(409, `${nodeLabel}: 智能体「${agent.name}」由智能体训练师独立训练，不能加入流水线`);
+      }
+    }
   }
 }
 

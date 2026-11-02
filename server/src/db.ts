@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 
 /**
  * 首个支持增量迁移的版本。低于该版本的旧库（探索期的历史 schema）仍走「清空重建」：
@@ -47,6 +47,19 @@ const MIGRATIONS: SchemaMigration[] = [
     to: 12,
     up: () => {},
   },
+  {
+    // v13：试运行任务与流水线任务分离。
+    // - agents 新增 prompt 列（训练型智能体的完整系统提示词，NULL = 流水线模板型）；
+    // - tasks 新增 kind 列，存量「智能体训练台」测试任务刷为 test；
+    // - 删除训练台流水线：试运行任务不再借流水线执行（历史任务的快照已固化，不受影响）。
+    to: 13,
+    up: (db) => {
+      db.exec('ALTER TABLE agents ADD COLUMN prompt TEXT;');
+      db.exec("ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'pipeline';");
+      db.exec("UPDATE tasks SET kind = 'test' WHERE pipeline_name = '智能体训练台';");
+      db.exec("DELETE FROM pipelines WHERE name = '智能体训练台';");
+    },
+  },
 ];
 
 export interface SchemaMigration {
@@ -71,6 +84,7 @@ CREATE TABLE IF NOT EXISTS agents (
   responsibilities TEXT NOT NULL DEFAULT '',
   deliverable TEXT NOT NULL DEFAULT '',
   guide TEXT NOT NULL DEFAULT '',
+  prompt TEXT,
   model TEXT,
   temperature REAL,
   tools TEXT NOT NULL,
@@ -125,6 +139,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
   task TEXT NOT NULL,
   status TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'pipeline',
   start_agent_id TEXT NOT NULL,
   pipeline_id TEXT,
   pipeline_name TEXT NOT NULL DEFAULT '',
@@ -388,10 +403,13 @@ function resetOutdatedSchema(db: DatabaseSync): void {
 
 /**
  * 只保留流水线模型下产生的任务。早期自由交接产生的任务没有流水线快照，
- * 启动时直接清掉，避免残缺数据混进任务列表。
+ * 启动时直接清掉，避免残缺数据混进任务列表。试运行任务（kind='test'）本来就没有
+ * 流水线快照，不在清理范围内。
  */
 function purgeLegacyRuntimeData(db: DatabaseSync): void {
-  db.exec('DELETE FROM tasks WHERE pipeline_id IS NULL OR pipeline_snapshot IS NULL;');
+  db.exec(
+    "DELETE FROM tasks WHERE kind = 'pipeline' AND (pipeline_id IS NULL OR pipeline_snapshot IS NULL);",
+  );
   db.exec('DELETE FROM turns WHERE task_id NOT IN (SELECT id FROM tasks);');
   db.exec(
     "DELETE FROM conversations WHERE turn_id NOT IN (SELECT id FROM turns);",

@@ -59,6 +59,10 @@ const ajv = new Ajv({ allErrors: true, strict: false, allowUnionTypes: true });
 export const HANDOFF_TOOL_DESCRIPTION =
   '提交本环节的交付文件夹并结束你的工作：把成果文件放进一个目录，用 folder 交出该目录。系统会把整个文件夹复制到交接对象的收件区并自动启动它；如果本节点是流水线终点，文件夹会交给用户验收。有多个交接对象时必须用 target 指明交给谁。';
 
+/** submit 的工具描述（试运行任务专用）：交付物直接交给用户评审。 */
+export const SUBMIT_TOOL_LINE =
+  '提交本轮交付并结束任务：把成果文件放进一个目录（默认 output\\），用 folder 指出该目录；系统会把整个文件夹原样交给用户评审。';
+
 /** load_skill 的工具描述：只讲用途，参数细节由 Schema 说明。 */
 export const LOAD_SKILL_TOOL_DESCRIPTION =
   '根据技能名称，加载技能包的说明书、文件清单与脚本位置。技能包会先复制到你的任务工作区，文档中的脚本占位符会替换成绝对路径。';
@@ -417,10 +421,12 @@ export interface ToolContext {
   signal: AbortSignal;
   settings: RuntimeSettings;
   systemPrompt: string;
-  /** 任务使用的流水线快照（启动时固化，后续编辑流水线不影响本任务）。 */
-  pipeline: Pipeline;
-  /** 本环节所属节点。 */
-  node: PipelineNode;
+  /** 任务类型：pipeline 注入 handoff（沿连线交接），test 注入 submit（交付给用户评审）。 */
+  taskKind: 'pipeline' | 'test';
+  /** 任务使用的流水线快照（启动时固化，后续编辑流水线不影响本任务）。试运行任务为 null。 */
+  pipeline: Pipeline | null;
+  /** 本环节所属节点。试运行任务为 null。 */
+  node: PipelineNode | null;
   /** 本节点的出边；空数组表示流水线终点，交付文件夹交给用户。 */
   outgoing: PipelineEdge[];
   completed: {
@@ -784,6 +790,7 @@ function makeBuiltinTools(
   agent: Agent,
   enabled: Set<string>,
   settings: RuntimeSettings,
+  taskKind: 'pipeline' | 'test',
 ): ResolvedTool[] {
   const tools: ResolvedTool[] = [];
   // 参数 Schema 统一取自 BUILTIN_TOOL_INFOS，避免两处定义漂移。
@@ -1372,47 +1379,92 @@ function makeBuiltinTools(
     },
   );
 
-  /* ---------- handoff ---------- */
-  enabled.add('handoff');
-  add(
-    'handoff',
-    HANDOFF_TOOL_DESCRIPTION,
-    async (args, ctx) => {
-      const folderRel = str(args, 'folder', { required: true, max: 500 });
-      const requestedTarget = str(args, 'target', { max: 80 });
-
-      // 选定出边：0 条 = 终点（交用户）；1 条 = 自动；≥2 条 = 必须用 target 指明交接对象。
-      let edge: PipelineEdge | null = null;
-      if (ctx.outgoing.length > 1) {
-        if (!requestedTarget.trim()) {
-          const names = ctx.outgoing
-            .map((item) => `「${ctx.store.getAgent(findNode(ctx.pipeline, item.to)?.agentId ?? '')?.name ?? '?'}」`)
-            .join('、');
-          throw new ToolError(`本节点有多个交接对象，必须用 target 指明交给哪一个：${names}`);
+  /* ---------- handoff（流水线任务） / submit（试运行任务） ---------- */
+  if (taskKind === 'test') {
+    // 试运行任务：交付物直接交给用户评审，没有下游环节。
+    tools.push({
+      spec: {
+        type: 'function',
+        function: {
+          name: 'submit',
+          description: SUBMIT_TOOL_LINE,
+          parameters: {
+            type: 'object',
+            properties: {
+              folder: { type: 'string', description: '交付目录（相对任务工作区，默认 output）' },
+            },
+            additionalProperties: false,
+          },
+        },
+      },
+      execute: async (args, ctx) => {
+        const folderRel = (str(args, 'folder', { max: 500 }) || 'output').trim();
+        const normalized = folderRel.split(/[\\/]/).join('/').replace(/^\.\//, '');
+        if (normalized === '.skills' || normalized.startsWith('.skills/')) {
+          throw new ToolError('技能副本目录 .skills 是系统管理的只读目录，不能作为交付目录');
         }
-        const match = ctx.outgoing.find((item) => {
-          const name = ctx.store.getAgent(findNode(ctx.pipeline, item.to)?.agentId ?? '')?.name ?? '';
-          return name.toLowerCase() === requestedTarget.trim().toLowerCase();
-        });
-        if (!match) {
-          const names = ctx.outgoing
-            .map((item) => `「${ctx.store.getAgent(findNode(ctx.pipeline, item.to)?.agentId ?? '')?.name ?? '?'}」`)
-            .join('、');
-          throw new ToolError(`target 必须是本节点的交接对象之一：${names}`);
+        let folder: HandoffFolder;
+        try {
+          folder = deliverToFinal({
+            store: ctx.store,
+            taskId: ctx.taskId,
+            senderSlug: ctx.agent.slug,
+            folderRel: normalized,
+          });
+        } catch (error) {
+          if (error instanceof DeliveryError) throw new ToolError(error.message);
+          throw error;
         }
-        edge = match;
-      } else if (ctx.outgoing.length === 1) {
-        edge = ctx.outgoing[0];
-      }
+        ctx.completed = { folder, target: { type: 'human' } };
+        return (
+          `已提交交付目录「${folder.path}」（${folder.files} 个文件，${folder.bytes} 字节），` +
+          `整目录已复制到任务目录 ${folder.deliveredPath}，任务已转交用户评审。`
+        );
+      },
+    });
+  } else {
+    // 流水线任务：按连线交接，终点交给用户。
+    enabled.add('handoff');
+    add(
+      'handoff',
+      HANDOFF_TOOL_DESCRIPTION,
+      async (args, ctx) => {
+        const folderRel = str(args, 'folder', { required: true, max: 500 });
+        const requestedTarget = str(args, 'target', { max: 80 });
 
-      const built = buildHandoff(ctx, edge, folderRel);
-      ctx.completed = {
-        folder: built.folder,
-        target: built.target,
-      };
-      return built.note;
-    },
-  );
+        // 选定出边：0 条 = 终点（交用户）；1 条 = 自动；≥2 条 = 必须用 target 指明交接对象。
+        let edge: PipelineEdge | null = null;
+        if (ctx.outgoing.length > 1) {
+          if (!requestedTarget.trim()) {
+            const names = ctx.outgoing
+              .map((item) => `「${ctx.store.getAgent(findNode(ctx.pipeline!, item.to)?.agentId ?? '')?.name ?? '?'}」`)
+              .join('、');
+            throw new ToolError(`本节点有多个交接对象，必须用 target 指明交给哪一个：${names}`);
+          }
+          const match = ctx.outgoing.find((item) => {
+            const name = ctx.store.getAgent(findNode(ctx.pipeline!, item.to)?.agentId ?? '')?.name ?? '';
+            return name.toLowerCase() === requestedTarget.trim().toLowerCase();
+          });
+          if (!match) {
+            const names = ctx.outgoing
+              .map((item) => `「${ctx.store.getAgent(findNode(ctx.pipeline!, item.to)?.agentId ?? '')?.name ?? '?'}」`)
+              .join('、');
+            throw new ToolError(`target 必须是本节点的交接对象之一：${names}`);
+          }
+          edge = match;
+        } else if (ctx.outgoing.length === 1) {
+          edge = ctx.outgoing[0];
+        }
+
+        const built = buildHandoff(ctx, edge, folderRel);
+        ctx.completed = {
+          folder: built.folder,
+          target: built.target,
+        };
+        return built.note;
+      },
+    );
+  }
 
   return tools;
 }
@@ -1491,7 +1543,7 @@ function buildHandoff(
     return { folder, target: { type: 'human' }, note };
   }
 
-  const nextNode = findNode(ctx.pipeline, edge.to);
+  const nextNode = findNode(ctx.pipeline!, edge.to);
   if (!nextNode) throw new ToolError('连线指向的节点不在流水线快照中，请通知用户调整流水线');
   const nextAgent = ctx.store.getAgent(nextNode.agentId);
   if (!nextAgent) throw new ToolError('交接对象对应的智能体已被删除，请通知用户调整流水线');
@@ -1635,14 +1687,19 @@ function makeCustomTools(store: Store, agent: Agent): ResolvedTool[] {
   }));
 }
 
-export function resolveTools(store: Store, agent: Agent): ResolvedTool[] {
+export function resolveTools(
+  store: Store,
+  agent: Agent,
+  options?: { taskKind?: 'pipeline' | 'test' },
+): ResolvedTool[] {
   const settings = store.getRuntimeSettings();
   // 内置工具由系统统一授予所有智能体：流水线跑的是开放式任务，充分放开模型的能力与创造力，
-  // 不再按档案里的 builtin 开关裁剪；handoff 仍由 makeBuiltinTools 强制注入，
+  // 不再按档案里的 builtin 开关裁剪；任务收尾工具按任务类型注入——
+  // pipeline 注入 handoff（沿连线交接），test 注入 submit（交付给用户评审）；
   // load_skill 只在智能体配置了技能时出现（否则模型拿到的是一个必然失败的空工具）。
   const enabled = new Set<string>(BUILTIN_TOOL_NAMES);
   if (agent.skillIds.length === 0) enabled.delete('load_skill');
-  const builtins = makeBuiltinTools(store, agent, enabled, settings);
+  const builtins = makeBuiltinTools(store, agent, enabled, settings, options?.taskKind ?? 'pipeline');
   const custom = makeCustomTools(store, agent);
   const seen = new Set<string>();
   const all: ResolvedTool[] = [];
