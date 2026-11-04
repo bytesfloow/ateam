@@ -112,15 +112,20 @@ mkdir -p "$DEPLOY_DIR" "$DEPLOY_DIR/data" "$DEPLOY_DIR/workspaces" "$SERVICE_HOM
 chown -R "$SERVICE_USER:$SERVICE_USER" "$DEPLOY_DIR" "$SERVICE_HOME"
 
 # ---------- 5. 代码（兼容旧 SFTP 部署留下的无 .git 目录）----------
-if [ ! -d "$DEPLOY_DIR/.git" ]; then
-  log "在 $DEPLOY_DIR 初始化 git 仓库（保留 data/、workspaces/、node_modules）"
-  git -C "$DEPLOY_DIR" init -q
-  git -C "$DEPLOY_DIR" remote remove origin 2>/dev/null || true
-  git -C "$DEPLOY_DIR" remote add origin "$REPO_URL"
-fi
-# 目录属主是服务账号，root 跑 git 会触发 dubious ownership 拦截
+# 目录属主是服务账号，root 跑任何 git 命令都会触发 dubious ownership 拦截，
+# 必须在 git init / remote / fetch 之前放行，否则 exit 128。
 git config --global --add safe.directory "$DEPLOY_DIR" 2>/dev/null || true
-cd "$DEPLOY_DIR"
+cd "$DEPLOY_DIR" || fail "无法进入 $DEPLOY_DIR"
+if [ ! -d .git ]; then
+  log "在 $DEPLOY_DIR 初始化 git 仓库（保留 data/、workspaces/、node_modules）"
+  git init -q || fail "git init 失败"
+fi
+# 幂等：上次引导可能在 remote add 之前就失败了，这里补齐/纠正 origin
+if git remote get-url origin >/dev/null 2>&1; then
+  git remote set-url origin "$REPO_URL"
+else
+  git remote add origin "$REPO_URL" || fail "git remote add 失败"
+fi
 git fetch --all --prune --quiet || fail "git fetch 失败（服务器能否访问 GitHub？）"
 # -f：允许覆盖旧部署留下的同名未跟踪文件（package.json / pnpm-lock.yaml 等）
 # gitignore 的 data/ workspaces/ dist/ web/dist/ node_modules/ 不受影响
