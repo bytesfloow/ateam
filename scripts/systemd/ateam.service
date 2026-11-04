@@ -1,0 +1,36 @@
+[Unit]
+Description=A-Team — 轻量智能体流水线
+Documentation=https://github.com/bytesfloow/ateam
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_USER@
+WorkingDirectory=@DEPLOY_DIR@
+EnvironmentFile=-/etc/ateam/ateam.env
+ExecStart=@NODE_BIN@ dist/server/src/index.js
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# 注意：这里刻意不启用 ProtectSystem=strict（CloudNine 的模板会启用）。
+# A-Team 的智能体工具允许读写本机任意绝对路径（无沙箱），只读根文件系统会
+# 破坏 run_command / write_file 等能力。写权限由 @DEPLOY_DIR@ 的属主保证。
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+# 日志走 journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ateam
+
+[Install]
+WantedBy=multi-user.target

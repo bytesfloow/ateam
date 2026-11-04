@@ -129,19 +129,75 @@ pnpm start
 
 打开 **http://127.0.0.1:3310**。
 
-### 一键部署到云服务器
-仓库自带部署脚本（本地构建 → 打包上传 → systemd 守护 → 健康检查 → 公网验证）：
+### 自动部署到云服务器（端口 3002）
+
+采用「开发机编排 + 服务器 `git pull`」模式：**推送代码 → 服务器拉代码 → 装依赖 → 构建 → 重启 → 健康检查 → 公网冒烟测试**，任一步失败自动回滚到上一个版本。
+
+A-Team 直接监听 `0.0.0.0:3002` 对外提供服务，**不装 nginx、不占用 80 端口**，可与同机的其他服务（例如占用 80 的 CloudNine）共存。
+
+| 脚本 | 运行位置 | 作用 |
+| --- | --- | --- |
+| `scripts/deploy_ateam.py` | 开发机 | 编排器：可选 push → SSH 引导/部署 → 公网健康检查 → 冒烟测试 |
+| `scripts/bootstrap.sh` | 服务器（root） | 首次引导：Node 24 / pnpm / 服务账号 / systemd / 构建启动 |
+| `scripts/deploy_remote.sh` | 服务器 | 日常部署：拉代码、构建、重启、健康检查、失败自动回滚 |
+| `scripts/smoke_test.py` | 任意 | 只读 API 冒烟测试（不会写入任何数据） |
+| `scripts/systemd/ateam.service` | 模板 | systemd unit，由 `bootstrap.sh` 注入真实路径 |
+
+#### 首次部署
 
 ```bash
-pip install paramiko          # 脚本依赖
-pnpm deploy:prod              # 全流程部署（默认目标 8.159.144.112:3002）
-pnpm deploy:prod:skip-build   # 服务器端已有产物时跳过本地构建
+# 0. 前提：改动已提交（部署脚本本身也必须在仓库里，--push 会负责推上去）
+git add -A && git commit -m "..."
+
+# 1. SSH 凭据，任选一种：
+#    a) 密钥（推荐）：~/.ssh/id_ed25519 会被自动发现，或显式 --key <path>
+#    b) 密码：在 .secrets/aliyun.env 写 export SSH_PASSWORD=...（或 CN_SSH_PASS），
+#       也可直接交互输入；密码登录需要本机安装 sshpass
+#       同一个文件也能写 ATEAM_DEPLOY_HOST / USER / DIR / PORT 覆盖默认目标
+# 2. GitHub 推送凭据：.secrets/github.env 里的 GITHUB_TOKEN（scripts/push.py 读取）
+pnpm deploy:bootstrap --push
 ```
 
-- 部署目录 `/opt/ateam`，专用系统用户 `ateam`，服务名 `ateam`（`systemctl restart ateam`）。
-- **重复部署不丢数据**：`data/`（SQLite）与 `workspaces/` 不在部署包内。
-- 凭据：环境变量 > `.secrets/aliyun.env`（已 gitignore，格式 `export CN_SSH_HOST/USER/PASS=...`）> 交互输入。
-- 目标可用环境变量覆盖：`ATEAM_DEPLOY_HOST / ATEAM_DEPLOY_USER / ATEAM_DEPLOY_DIR / ATEAM_DEPLOY_PORT`。
+#### 日常部署
+
+```bash
+pnpm deploy:prod --push        # 推代码 + 部署 + 冒烟测试
+pnpm deploy:prod               # 只部署服务器上的最新 origin/main
+pnpm deploy:prod:skip-build    # 不重新构建，仅重启（改了服务器配置时用）
+pnpm deploy:smoke --url http://8.159.144.112:3002/   # 单独跑冒烟测试
+```
+
+> pnpm 会把参数直接转发给脚本，**不要加 `--`**（pnpm 8 会把 `--` 原样传给 Python 导致参数解析失败）。
+> 也可以直接调用：`python3 scripts/deploy_ateam.py --host 1.2.3.4 --user ubuntu --key ~/.ssh/id_ed25519 --no-build --skip-smoke`
+
+#### 常用参数
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--host` | `8.159.144.112` | 目标服务器 |
+| `--user` | `root` | SSH 用户（非 root 需要免密 sudo） |
+| `--ssh-port` | `22` | SSH 端口 |
+| `--app-port` | `3002` | 对外服务端口 |
+| `--deploy-dir` | `/opt/ateam` | 服务器部署目录 |
+| `--branch` | `main` | 部署分支 |
+| `--key` | 自动发现 | SSH 私钥路径 |
+| `--password` | 关 | 强制密码登录 |
+| `--push` | 关 | 部署前推本地提交到 GitHub |
+| `--bootstrap` | 关 | 执行首次引导 |
+| `--no-build` / `--skip-build` | 关 | 跳过构建 |
+| `--skip-smoke` | 关 | 跳过冒烟测试 |
+| `--public-url` | `http://HOST:APP_PORT/` | 对外访问地址 |
+
+默认值也可用环境变量覆盖：`ATEAM_DEPLOY_HOST / ATEAM_DEPLOY_USER / ATEAM_DEPLOY_DIR / ATEAM_DEPLOY_PORT`。
+
+#### 部署细节
+
+- 部署目录 `/opt/ateam`，服务账号 `ateam`，服务名 `ateam`：`systemctl status ateam`、`journalctl -u ateam -f`。
+- 运行参数在 `/etc/ateam/ateam.env`（`PORT=3002`、`HOST=0.0.0.0`），首次引导生成后不会覆盖。
+- **不丢数据**：`data/`（SQLite）与 `workspaces/`（任务工作区）是 gitignore 的持久化目录，拉代码和回滚都不会删除；旧版 SFTP 部署的实例可直接用 `--bootstrap` 平滑升级。
+- **失败自动回滚**：代码退回 `PREV_COMMIT` 并重新构建、重启服务，日志见 `journalctl -u ateam`。
+- 首次部署后需在云控制台放行 `3002/tcp`，否则公网健康检查会失败（此时服务器本机服务已正常）。
+- 旧版「本地构建 + SFTP 上传」脚本保留为 `pnpm deploy:legacy`（`scripts/deploy.py`，依赖 `paramiko`），仅作备用。
 
 ### 首次使用
 1. 在「设置 → 模型接入」填写 Base URL、模型名称与 API Key（默认指向 DeepSeek）。

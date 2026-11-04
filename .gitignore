@@ -10,3 +10,7 @@ workspaces/
 .DS_Store
 shots/
 .secrets/
+
+# Python 部署脚本缓存
+__pycache__/
+*.pyc
